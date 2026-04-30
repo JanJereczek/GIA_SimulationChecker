@@ -134,15 +134,28 @@ def main() -> None:
     args = _parse_args()
     source_path = args.source_path
     variable_list = args.variable_list
-    workdir = os.getcwd()
 
-    commit_num = _get_commit_number()
+    run_checker(
+        source_path=source_path,
+        variable_list=variable_list,
+        workdir=os.getcwd(),
+    )
+
+
+def run_checker(
+    source_path: str,
+    variable_list: str = DEFAULT_VARIABLE_LIST,
+    workdir: str | None = None,
+    commit_num: str | None = None,
+):
+    workdir = os.path.abspath(workdir or os.getcwd())
+    commit_num = _get_commit_number() if commit_num is None else commit_num
     experiments_ismip7 = _load_experiments_csv(
         os.path.join(workdir, EXPERIMENTS_ISMIP7_CSV_FILENAME)
     )
     ismip_meta, ismip_var, mandatory_variables = _load_criteria(workdir, variable_list)
 
-    _run_compliance_checker(
+    summary = _run_compliance_checker(
         source_path=source_path,
         commit_num=commit_num,
         ismip_meta=ismip_meta,
@@ -151,6 +164,16 @@ def main() -> None:
         experiments=experiments_ismip7,
         criteria_file=VARIABLE_REQUEST_XLSX,
     )
+
+    log_path = os.path.join(source_path, "compliance_checker_log.txt")
+    log_text = ""
+    if os.path.exists(log_path):
+        with open(log_path, "r") as log_file:
+            log_text = log_file.read()
+
+    summary["log_path"] = log_path
+    summary["log_text"] = log_text
+    return summary
 
 
 def _get_commit_number() -> str:
@@ -250,10 +273,10 @@ def _run_compliance_checker(
     mandatory_variables,
     experiments,
     criteria_file,
-) -> None:
+):
     if not os.path.isdir(source_path):
         print(f"ERROR: Directory not found: '{source_path}'. Please check your --source-path argument.")
-        return
+        return _empty_summary()
 
     try:
         with open(os.path.join(source_path, "compliance_checker_log.txt"), "w") as f:
@@ -267,7 +290,7 @@ def _run_compliance_checker(
                 msg = f"No .nc files found in directory '{source_path}'. Please check your --source-path argument."
                 print(f"ERROR: {msg}")
                 f.write(f"ERROR: {msg}\n")
-                return
+                return _empty_summary()
 
             summary = _process_experiments(
                 log_file=f,
@@ -292,12 +315,29 @@ def _run_compliance_checker(
             total_attr_errors=summary["total_attr_errors"],
             report_naming_issues=summary["report_naming_issues"],
         )
+        return summary
 
     except TypeError as err:
         print(
             "Something went wrong with your dataset. Please, check your file(s) carefully. Error:",
             err,
         )
+        return _empty_summary()
+
+
+def _empty_summary() -> dict:
+    return {
+        "exp_counter": 0,
+        "file_counter": 0,
+        "total_errors": 0,
+        "total_naming_errors": 0,
+        "total_num_errors": 0,
+        "total_spatial_errors": 0,
+        "total_time_errors": 0,
+        "total_attr_errors": 0,
+        "total_file_errors": 0,
+        "report_naming_issues": [],
+    }
 
 
 def _group_files_by_experiment(source_path: str) -> dict:
