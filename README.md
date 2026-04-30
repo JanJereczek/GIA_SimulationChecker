@@ -61,3 +61,13 @@ python test/generate_test_files.py --grid AIS_16000m --scenario ctrl --scalars -
 # List available grids
 python test/generate_test_files.py --list-grids
 ```
+
+---
+
+## Running Tests
+
+The regression suite uses `pytest` and creates temporary synthetic datasets, then mutates them to verify expected checker failures for naming, missing variables, time-axis problems, and missing attributes.
+
+```bash
+pytest -v tests/test_compliance_checker.py
+```
