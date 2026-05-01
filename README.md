@@ -1,55 +1,63 @@
-# Ice Sheet Simulation compliance checker
+# Ice Sheet Simulation Compliance Checker
 
-The script checks the compliance of a simulation dataset according criteria, which are related to:
+Checks ISMIP7 NetCDF simulation datasets for compliance with the [ISMIP7 data request conventions](https://www.ismip.org/). The following categories are validated for every file:
 
-* naming conventions
-* admissible numerical values,
-* spatial definition of the grid which differs according to the ice sheet (AIS vs GIS),
-* time recording dependent of the experiments.
+1. **Naming** — variable name, region field, ISM member id (`mNNN`), ESM name (CMIP6/CMIP7 registry), forcing member id (`fNNN`), set counter (`[C|E|P]NNN`), and year range (`YYYY-YYYY` matching the actual time axis).
+2. **Numerical** — units match the data request; all values lie within the allowed min/max range for the relevant region; array is not entirely fill values.
+3. **Spatial** *(xyt variables only)* — grid corners lie within the expected AIS or GrIS extents; resolution is one of the allowed values; x and y cell size are equal.
+4. **Time** — time dimension is present, unlimited, and monotonically increasing; annual cadence; experiment end date and duration match `experiments_ismip7.csv`.
+5. **Attributes** — required global and coordinate attributes are present and have correct values; `standard_name` matches data request; `_FillValue` equals the NetCDF4 default for the variable's dtype; variable and time are float32; `scale_factor` and `add_offset` are not allowed.
 
-The compliance criteria of output variables are defined in a separate csv file. The compliance criteria of experiments are directly defined as a dictionnary in the python file.
+Compliance criteria are defined in `conventions/ISMIP7_variable_request.xlsx` (variable metadata) and `experiments_ismip7.csv` (valid experiment date ranges).
 
-=> For ISMIP6 simulations, the criteria are following the conventions defined in the [ISMIP6 wiki](https://www.climate-cryosphere.org/wiki/index.php?title=ISMIP6-Projections-Antarctica#Appendix_1_.E2.80.93_Output_grid_definition_and_interpolation). The associated csv file is [ismip6_criteria.csv](https://github.com/jbbarre/ISM_SimulationChecker/blob/main/ismip6_criteria.csv)
+---
 
-=> ISMIP6 2300 file name convention: check carrefully the section _A2.1 File name convention_ of the [ISMIP6 2300 wiki](https://www.climate-cryosphere.org/wiki/index.php?title=ISMIP6-Projections2300-Antarctica)
+## Setup
 
-*************************************************
+```bash
+conda env create -f isschecker_env.yml
+conda activate isschecker
+```
 
-### Python and dependencies
+Dependencies: Python 3.14, `numpy` 2.4, `pandas` 3.0, `openpyxl` 3.1, `xarray` 2026.4, `cftime` 1.6, `netCDF4` 1.7, `tqdm` 4.67.
 
-The code has been developed with python 3.9 and the following modules:
+---
 
-* os
-* xarray
-* cftime
-* numpy
-* pandas
-* datetime
-* tqdm
+## Running the checker
 
-=> Conda users can install the **isscheck** environnment with the YML file [isschecker_env.yml](https://github.com/jbbarre/ISM_SimulationChecker/blob/main/isschecker_env.yml).
+The script must be run from the repository root. It writes `compliance_checker_log.txt` into the `--source-path` directory.
 
-*************************************************
+```bash
+# Check x,y,t (3D spatial) variables
+python compliance_checker.py --source-path ./Models/GrIS/ISMIP7/SYNTH1/CORE --variable-list ismip7_xyt
 
-### Test the code
+# Check scalar (time-only) variables
+python compliance_checker.py --source-path ./Models/AIS/ISMIP7/SYNTH1/CORE --variable-list ismip7_scalars
 
-1. Conda users: activate the isschecker environnement: `> conda activate isschecker`.
-   For others, be sure that the dependencies specified in the YML file [isschecker_env.yml] (https://github.com/jbbarre/ISM_SimulationChecker/blob/main/isschecker_env.yml) are installed.
+# Check both
+python compliance_checker.py --source-path ./Models/GrIS/ISMIP7/SYNTH1/CORE --variable-list ismip7
+```
 
-2. In a terminal, run the script: `> python compliance_checker.py`. A progression bar appears in the terminal and shows the progression.
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--source-path` | `./Models/GrIS/ISMIP7/SYNTH1/CORE` | Directory containing `.nc` files to check |
+| `--variable-list` | `ismip7_scalars` | `ismip7_xyt`, `ismip7_scalars`, or `ismip7` (both) |
 
-3. Without any changes, the script checks the `test` directory, which contains a single file. After processing the check, open the *compliance_checker_log.txt* file created in the `test` directory. The compliance checker raises errors because the test data is just a short extraction of a complete dataset.
+---
 
-*************************************************
+## Generating synthetic test files
 
-### How to launch a compliance check ?
+`test/generate_test_files.py` creates ISMIP7-style NetCDF test files with synthetic data. See [test/README.md](test/README.md) for full options and examples.
 
-1. In a terminal, run the script with the source path and experiment set:
-`> ./compliance_checker.py --source-path ./test --experiment-set ismip6`
+```bash
+conda activate isschecker
 
-2. Use `--experiment-set ismip6_ext` to test the ISMIP6 extension (2300) experiment set.
+# Generate 286-year GrIS ctrl xyt variables
+python test/generate_test_files.py --grid GrIS_16000m --scenario ctrl --xyt --nyears 286 --start-year 2015
 
-3. The script creates a *compliance_checker_log.txt* file in the source path, which reports the errors and warnings.
+# Generate 286-year AIS ctrl scalar variables
+python test/generate_test_files.py --grid AIS_16000m --scenario ctrl --scalars --nyears 286 --start-year 2015
 
-
-
+# List available grids
+python test/generate_test_files.py --list-grids
+```
