@@ -16,7 +16,7 @@ compliance_checker = importlib.import_module("compliance_checker")
 
 
 def _load_generator_module():
-    generator_path = REPO_ROOT / "test" / "generate_test_files.py"
+    generator_path = REPO_ROOT / "generate" / "generate_test_files.py"
     spec = importlib.util.spec_from_file_location("generate_test_files", generator_path)
     assert spec is not None
     module = importlib.util.module_from_spec(spec)
