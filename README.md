@@ -71,3 +71,9 @@ The regression suite uses `pytest` and creates temporary synthetic datasets, the
 ```bash
 pytest -v tests/test_compliance_checker.py
 ```
+
+If you want to retain the files generated during testing you can use:
+```
+pytest -v tests/test_compliance_checker.py --basetemp=/tmp/pytest_tmp
+```
+The files will then be left in `/tmp/pytest_tmp`.  Otherwise, they are cleaned up once tests pass.
