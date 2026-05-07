@@ -47,17 +47,33 @@ python compliance_checker.py --source-path ./Models/GrIS/ISMIP7/SYNTH1/CORE --va
 
 ## Generating synthetic test files
 
-`test/generate_test_files.py` creates ISMIP7-style NetCDF test files with synthetic data. See [test/README.md](test/README.md) for full options and examples.
+`generate/generate_test_files.py` creates ISMIP7-style NetCDF test files with synthetic data. See [generate/README.md](generate/README.md) for full options and examples.
 
 ```bash
 conda activate isschecker
 
 # Generate 286-year GrIS ctrl xyt variables
-python test/generate_test_files.py --grid GrIS_16000m --scenario ctrl --xyt --nyears 286 --start-year 2015
+python generate/generate_test_files.py --grid GrIS_16000m --scenario ctrl --xyt --nyears 286 --start-year 2015
 
 # Generate 286-year AIS ctrl scalar variables
-python test/generate_test_files.py --grid AIS_16000m --scenario ctrl --scalars --nyears 286 --start-year 2015
+python generate/generate_test_files.py --grid AIS_16000m --scenario ctrl --scalars --nyears 286 --start-year 2015
 
 # List available grids
-python test/generate_test_files.py --list-grids
+python generate/generate_test_files.py --list-grids
 ```
+
+---
+
+## Running Tests
+
+The regression suite uses `pytest` and creates temporary synthetic datasets, then mutates them to verify expected checker failures for naming, missing variables, time-axis problems, and missing attributes.
+
+```bash
+pytest -v tests/test_compliance_checker.py
+```
+
+If you want to retain the files generated during testing you can use:
+```
+pytest -v tests/test_compliance_checker.py --basetemp=/tmp/pytest_tmp
+```
+The files will then be left in `/tmp/pytest_tmp`.  Otherwise, they are cleaned up once tests pass.

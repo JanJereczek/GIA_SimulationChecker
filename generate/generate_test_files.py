@@ -16,12 +16,12 @@ import netCDF4
 def get_available_grids(conventions_dir):
     """
     Get available grid definitions from gdfs directory.
-    
+
     Parameters
     ----------
     conventions_dir : str
         Path to conventions directory
-        
+
     Returns
     -------
     dict
@@ -30,10 +30,10 @@ def get_available_grids(conventions_dir):
     # Grid definitions moved to project root `gdfs` directory
     gdf_dir = Path(conventions_dir).parent / 'gdfs'
     grids = {'GrIS': [], 'AIS': []}
-    
+
     if not gdf_dir.exists():
         return grids
-    
+
     for file in sorted(gdf_dir.glob('gdf_ISMIP7_*.txt')):
         # Extract grid type and resolution from filename
         # e.g., gdf_ISMIP7_GrIS_16000m.txt
@@ -42,36 +42,36 @@ def get_available_grids(conventions_dir):
             grid_type = match.group(1)
             resolution = match.group(2)
             grids[grid_type].append(resolution)
-    
+
     return grids
 
 
 def parse_grid_file(gdf_file):
     """
     Parse ISMIP7 grid definition file.
-    
+
     Parameters
     ----------
     gdf_file : str
         Path to grid definition file
-        
+
     Returns
     -------
     dict
         Dictionary with grid parameters (xsize, ysize, xfirst, yfirst, xinc, yinc, etc.)
     """
     grid_params = {}
-    
+
     with open(gdf_file, 'r') as f:
         for line in f:
             line = line.strip()
             if line.startswith('#') or not line or '=' not in line:
                 continue
-            
+
             key, value = line.split('=', 1)
             key = key.strip()
             value = value.strip().strip('"')
-            
+
             try:
                 # Try to convert to int or float
                 if '.' in value:
@@ -80,40 +80,40 @@ def parse_grid_file(gdf_file):
                     grid_params[key] = int(value)
             except ValueError:
                 grid_params[key] = value
-    
+
     return grid_params
 
 
 def read_variable_criteria(excel_file, include_non_mandatory=False):
     """
     Read variable criteria from Excel file.
-    
+
     Parameters
     ----------
     excel_file : str
         Path to the Excel file
     include_non_mandatory : bool
         Whether to include non-mandatory variables
-        
+
     Returns
     -------
     dict
         Dictionary with variable information
     """
     import pandas as pd
-    
+
     variables = {}
-    
+
     # Read the Excel file
     df = pd.read_excel(excel_file, sheet_name='ISM')
-    
+
     # Filter out rows that don't have variable names
     df = df.dropna(subset=['Variable Name'])
-    
+
     # Filter mandatory variables if requested
     if not include_non_mandatory:
         df = df[df['Mandatory (yes/no)'].str.lower() == 'yes']
-    
+
     for idx, row in df.iterrows():
         var_name = row['Variable Name']
         # Parse dimensions from Dim column
@@ -124,7 +124,7 @@ def read_variable_criteria(excel_file, include_non_mandatory=False):
             dimensions = ['t']
         else:
             dimensions = ['x', 'y', 't']  # Default
-        
+
         variables[var_name] = {
             'dimensions': dimensions,
             'type': row['Type'],
@@ -151,14 +151,14 @@ def read_variable_criteria(excel_file, include_non_mandatory=False):
                 except Exception:
                     parsed = None
                 variables[var_name][lc] = parsed
-    
+
     return variables
 
 
 def generate_synthetic_data(shape, min_val, max_val, dtype=np.float32, eps=1e-6):
     """
     Generate synthetic data within specified range.
-    
+
     Parameters
     ----------
     shape : tuple
@@ -172,7 +172,7 @@ def generate_synthetic_data(shape, min_val, max_val, dtype=np.float32, eps=1e-6)
     eps : float, optional
         A small fraction by which `min_val` and `max_val` move toward one another to avoid
         synthetic data that violates numerical checks because of roundoff.
-        
+
     Returns
     -------
     np.ndarray
@@ -185,11 +185,11 @@ def generate_synthetic_data(shape, min_val, max_val, dtype=np.float32, eps=1e-6)
 
 def create_netcdf_file(output_file, grid_name='GrIS_16000m', scenario='ctrl', start_year=2015, nyears=5,
                        conventions_dir=None, include_non_mandatory=False, include_scalars=False,
-                       include_xyt=False,
+                       include_xyt=False, output_root=None,
                        ism_member_id='m001', esm_id='CESM2-WACCM', forcing_member_id='f001', set_counter='C001'):
     """
     Create NetCDF files with ISMIP7 variables (one file per variable).
-    
+
     Parameters
     ----------
     output_file : str
@@ -211,7 +211,7 @@ def create_netcdf_file(output_file, grid_name='GrIS_16000m', scenario='ctrl', st
     include_xyt : bool
         Whether to include non-scalar x,y,t variables (3D). Set to False to skip x,y,t variables.
     """
-    
+
     group='ISMIP7'
     model='SYNTH1'
     contact_names='Your Name'
@@ -224,12 +224,12 @@ def create_netcdf_file(output_file, grid_name='GrIS_16000m', scenario='ctrl', st
         conventions_dir = script_dir / 'conventions'
 
     conventions_dir = Path(conventions_dir)
-    
+
     # Parse grid name to get grid type and resolution
     match = re.match(r'(GrIS|AIS)_(.+)', grid_name)
     if not match:
         raise ValueError(f"Invalid grid name: {grid_name}. Expected format: GrIS_16000m or AIS_16000m")
-    
+
     grid_type, resolution = match.groups()
 
     # Choose CRS per domain: GrIS -> EPSG:3413, AIS -> EPSG:3031
@@ -237,30 +237,30 @@ def create_netcdf_file(output_file, grid_name='GrIS_16000m', scenario='ctrl', st
         domain_crs = 'EPSG:3413'
     else:
         domain_crs = 'EPSG:3031'
-    
+
     # Determine output directory
-    models_dir = Path(__file__).parent.parent / 'Models'
+    models_dir = Path(output_root) if output_root is not None else Path(__file__).parent.parent / 'Models'
     if grid_type == 'AIS':
         output_dir = models_dir / 'AIS' / group / model / 'CORE'
     else:  # GrIS
         output_dir = models_dir / 'GrIS' / group / model / 'CORE'
-    
+
     output_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # Load grid definition
     gdf_file = conventions_dir.parent / 'gdfs' / f'gdf_ISMIP7_{grid_type}_{resolution}.txt'
     if not gdf_file.exists():
         raise FileNotFoundError(f"Grid definition file not found: {gdf_file}")
-    
+
     grid_params = parse_grid_file(str(gdf_file))
-    
+
     nx = grid_params['xsize']
     ny = grid_params['ysize']
     xfirst = grid_params['xfirst']
     yfirst = grid_params['yfirst']
     xinc = grid_params['xinc']
     yinc = grid_params['yinc']
-    
+
     # Read variable criteria from Excel file
     excel_file = conventions_dir / 'ISMIP7_variable_request.xlsx'
     if not excel_file.exists():
@@ -268,15 +268,15 @@ def create_netcdf_file(output_file, grid_name='GrIS_16000m', scenario='ctrl', st
         variables = {}
     else:
         variables = read_variable_criteria(str(excel_file), include_non_mandatory)
-    
+
     # Create coordinate arrays
     x = np.arange(nx, dtype=np.float32) * xinc + xfirst
     y = np.arange(ny, dtype=np.float32) * yinc + yfirst
-    
+
     # Create time coordinates - will be set per variable type later
     # ST (State) variables: end of year (e.g., 0.999, 1.999, ...)
     # FL (Flux) variables: middle of year (e.g., 0.5, 1.5, ...) with bounds
-    
+
     # Select min/max values based on grid type
     val_key_min = f'min_value_{grid_type.lower()}'
     val_key_max = f'max_value_{grid_type.lower()}'
@@ -285,15 +285,15 @@ def create_netcdf_file(output_file, grid_name='GrIS_16000m', scenario='ctrl', st
     fillval = netCDF4.default_fillvals['f4']
 
     # contact defaults are provided via function signature
-    
+
     # Create variables with x-y-t dimensions
-    xyt_vars = {var: info for var, info in variables.items() 
+    xyt_vars = {var: info for var, info in variables.items()
                if info['dimensions'] == ['x', 'y', 't']}
-    
+
     # Create scalar time-series variables (t dimension only)
-    scalar_vars = {var: info for var, info in variables.items() 
+    scalar_vars = {var: info for var, info in variables.items()
                   if info['dimensions'] == ['t']}
-    
+
     # Compute time range string for filename
     time_range = f"{start_year}-{start_year + nyears - 1}"
 
@@ -307,10 +307,10 @@ def create_netcdf_file(output_file, grid_name='GrIS_16000m', scenario='ctrl', st
         f"{domain_id}_{source_id}_{ism_id}_{ism_member_id}_{esm_id}_{forcing_member_id}_"
         f"{experiment_id}_{set_counter}_{time_range}.nc"
     )
-    
+
     # Create separate file for each variable
     created_files = []
-    
+
     # Process x-y-t variables (3D). Can be enabled via `include_xyt`.
     if include_xyt:
         for var_name, var_info in xyt_vars.items():
@@ -450,12 +450,12 @@ def create_netcdf_file(output_file, grid_name='GrIS_16000m', scenario='ctrl', st
             created_files.append(str(output_path))
     else:
         print(f"Skipping x,y,t variables (include_xyt=False); {len(xyt_vars)} variables not written")
-    
+
     # Process scalar variables
     if include_scalars:
         for var_name, var_info in scalar_vars.items():
             var_type = var_info['type']
-        
+
             # Select appropriate time coordinate (days since 1850)
             origin = datetime(1850, 1, 1).date()
             if var_type == 'ST':
@@ -486,7 +486,7 @@ def create_netcdf_file(output_file, grid_name='GrIS_16000m', scenario='ctrl', st
                     dt = datetime(year, 12, 31).date()
                     time_days.append(float((dt - origin).days))
                 time_coord = np.array(time_days, dtype=np.float32)
-        
+
             # Determine min/max for this scalar variable (per-grid if available)
             min_val = var_info.get(val_key_min)
             max_val = var_info.get(val_key_max)
@@ -574,8 +574,8 @@ def create_netcdf_file(output_file, grid_name='GrIS_16000m', scenario='ctrl', st
     print(f"Created {len(created_files)} files in {output_dir}")
     print(f"  Grid: {grid_name} ({nx} x {ny})")
     print(f"  Years: {nyears}")
-    
-    
+
+
     return created_files
 
 
@@ -584,7 +584,7 @@ def create_multiple_files(output_dir=None, n_files=3, conventions_dir=None,
                           include_xyt=True, include_non_mandatory=False):
     """
     Create multiple NetCDF files for testing (one file per variable per grid).
-    
+
     Parameters
     ----------
     output_dir : str
@@ -594,50 +594,51 @@ def create_multiple_files(output_dir=None, n_files=3, conventions_dir=None,
     conventions_dir : str
         Path to conventions directory
     """
-    
+
     if conventions_dir is None:
         # Try to find conventions directory relative to this script
         script_dir = Path(__file__).parent.parent
         conventions_dir = script_dir / 'conventions'
-    
+
     # Get available grids
     grids = get_available_grids(str(conventions_dir))
-    
+
     total_files = 0
-    
+
     # Create files for both Antarctica (AIS) and Greenland (GrIS)
     for grid_type in ['GrIS', 'AIS']:
         if grid_type not in grids or not grids[grid_type]:
             print(f"No {grid_type} grids found")
             continue
-        
+
         # Use the first n_files available grids
         for i, resolution in enumerate(grids[grid_type][:n_files]):
             grid_name = f'{grid_type}_{resolution}'
-            
+
             created_files = create_netcdf_file(
                 None,  # Use default output path
                 grid_name=grid_name,
                 nyears=5,  # Default 5 years for testing
                 start_year=start_year,
                 conventions_dir=conventions_dir,
+                output_root=output_dir,
                 include_scalars=(i == 0),
                 include_xyt=include_xyt,
                 include_non_mandatory=include_non_mandatory,
              )
             total_files += len(created_files)
-    
+
     print(f"Total files created: {total_files}")
 
 
 if __name__ == '__main__':
     import argparse
-    
+
     # Get available grids
     script_dir = Path(__file__).parent.parent
     conventions_dir = script_dir / 'conventions'
     available_grids = get_available_grids(str(conventions_dir))
-    
+
     # Create list of available grid choices, excluding some high-resolution entries
     grid_choices = []
     for grid_type in ['GrIS', 'AIS']:
@@ -645,7 +646,7 @@ if __name__ == '__main__':
             for resolution in available_grids[grid_type]:
                 name = f'{grid_type}_{resolution}'
                 grid_choices.append(name)
-    
+
     parser = argparse.ArgumentParser(
         description='Generate ISMIP7 NetCDF files with synthetic data'
     )
@@ -722,9 +723,9 @@ if __name__ == '__main__':
         action='store_true',
         help='List all available grids and exit'
     )
-    
+
     args = parser.parse_args()
-    
+
     # Handle list grids option
     if args.list_grids:
         print("\nAvailable grids:\n")
@@ -735,7 +736,7 @@ if __name__ == '__main__':
                     print(f"  - {grid_type}_{resolution}")
         print()
         exit(0)
-    
+
     if args.multiple:
         create_multiple_files(conventions_dir=args.conventions_dir,
                               start_year=args.start_year,

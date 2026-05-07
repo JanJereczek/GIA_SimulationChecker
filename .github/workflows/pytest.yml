@@ -1,0 +1,28 @@
+name: Pytest
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests:
+    name: Run Pytest
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up micromamba environment
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-file: isschecker_env.yml
+          environment-name: isschecker
+          cache-environment: true
+          cache-downloads: true
+          init-shell: >-
+            bash
+
+      - name: Run test suite
+        shell: micromamba-shell {0}
+        run: pytest -v tests/test_compliance_checker.py
