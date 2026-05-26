@@ -130,7 +130,21 @@ VALID_ESM_NAMES: set[str] = {
 }
 
 
+EXPECTED_CONDA_ENV = "isschecker"
+
+
+def _check_environment() -> None:
+    active = os.environ.get("CONDA_DEFAULT_ENV", "")
+    if active != EXPECTED_CONDA_ENV:
+        print(
+            f"WARNING: expected conda environment '{EXPECTED_CONDA_ENV}' but"
+            f" '{active or '(none)'}' is active. Run 'conda activate {EXPECTED_CONDA_ENV}'"
+            " before using this script to ensure the correct package versions are loaded."
+        )
+
+
 def main() -> None:
+    _check_environment()
     args = _parse_args()
     source_path = args.source_path
     variable_list = args.variable_list

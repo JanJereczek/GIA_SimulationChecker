@@ -1,0 +1,1100 @@
+#!/usr/bin/env python3
+#
+# GIAMIP Compliance Checker — check summary
+#
+# 1. Naming (_check_naming)
+#    - Filename has exactly 4 underscore-separated fields: {var}_{exp_id}_{group}_{model}.nc
+#    - Variable name (field 0) is a recognised GIAMIP variable name.
+#    - Experiment id (field 1) is present in experiments_giamip.csv.
+#
+# 2. Numerical (_check_numerical)
+#    - Variable units match the data request.
+#    - No NaN or missing values are present in the data array.
+#    - Mask variables (ocean_area_fraction, land_ice_area_fraction) have all values in [0, 1].
+#
+# 3. Spatial (_check_spatial)  [lat/lon/t variables only]
+#    - Grid has exactly 257 latitude × 513 longitude nodes.
+#    - Latitude spans [-90, 90] and increases south-to-north.
+#    - Longitude spans [0, 360) and increases west-to-east.
+#
+# 4. Time (_check_time)  [t and lat/lon/t variables only]
+#    - Time dimension is present, is an unlimited (record) dimension, and values are
+#      monotonically increasing.
+#    - For 1000-year output variables the time step is within [900, 1100] years.
+#    - Experiment start and end years match the ranges in experiments_giamip.csv.
+#
+# 5. Attributes (_check_attributes)
+#    - Global attributes present: group, model, contact_name, contact_email, reference_frame.
+#    - reference_frame global attribute equals "CM" (case-insensitive).
+#    - Time coordinate has units ("days since …") and calendar attributes.
+#    - lat and lon coordinates have units attributes (lat/lon/t variables).
+#    - Variable has long_name attribute.
+#    - standard_name matches data request (if one is specified).
+#    - Main variable must be single-precision float (float32 / f4).
+
+import datetime
+import os
+import subprocess
+import argparse
+
+import numpy as np
+import pandas as pd
+import xarray as xr
+import netCDF4
+from tqdm import tqdm
+
+
+DEFAULT_SOURCE_PATH = "./Models/GIAMIP/Exp01/CORE"
+EXPERIMENTS_GIAMIP_CSV = "experiments_giamip.csv"
+
+# GIAMIP file naming convention:
+# {var}_{experiment_id}_{group_name}_{model_name}.nc
+GIAMIP_FILENAME_PARTS = 4
+GIAMIP_FILENAME_VAR_IDX = 0
+GIAMIP_FILENAME_EXP_IDX = 1
+GIAMIP_FILENAME_GROUP_IDX = 2
+GIAMIP_FILENAME_MODEL_IDX = 3
+
+GIAMIP_GRID_NLAT = 257
+GIAMIP_GRID_NLON = 513
+GIAMIP_LAT_EXTENT = (-90.0, 90.0)
+GIAMIP_LON_EXTENT = (0.0, 360.0)
+GIAMIP_COORD_TOL = 0.1  # degrees tolerance for grid extent checks
+
+TIME_STEP_MIN_YEARS = 900
+TIME_STEP_MAX_YEARS = 1100
+
+MASK_VARIABLES = {"ocean_area_fraction", "land_ice_area_fraction"}
+
+GIAMIP_VARIABLES = [
+    # --- Required 3D (time, lat, lon) ---
+    {
+        "variable": "bed", "dim": "lat_lon_t", "units": "m",
+        "mandatory": True, "output_interval": "1000yr",
+        "standard_name": "bedrock_altitude",
+        "long_name": "Height of the solid Earth surface beneath ice and ocean water",
+    },
+    {
+        "variable": "delta_g", "dim": "lat_lon_t", "units": "m",
+        "mandatory": True, "output_interval": "1000yr",
+        "standard_name": None,
+        "long_name": "Change in geoid height relative to the initial simulation time step",
+    },
+    {
+        "variable": "delta_rsl", "dim": "lat_lon_t", "units": "m",
+        "mandatory": True, "output_interval": "1000yr",
+        "standard_name": "change_in_mean_sea_level_wrt_solid_surface",
+        "long_name": "Relative sea-level change relative to the initial simulation timestep",
+    },
+    {
+        "variable": "ocean_area_fraction", "dim": "lat_lon_t", "units": "1",
+        "mandatory": True, "output_interval": "forcing",
+        "standard_name": "sea_area_fraction",
+        "long_name": "Fraction of grid-cell area covered by ocean",
+    },
+    {
+        "variable": "land_ice_area_fraction", "dim": "lat_lon_t", "units": "1",
+        "mandatory": True, "output_interval": "forcing",
+        "standard_name": "land_ice_area_fraction",
+        "long_name": "Fraction of grid-cell area covered by grounded and floating land ice",
+    },
+    # --- Required scalars (time only) ---
+    {
+        "variable": "mean_delta_g", "dim": "t", "units": "m",
+        "mandatory": True, "output_interval": "1000yr",
+        "standard_name": None,
+        "long_name": "Spatial mean of geoid height change over the ocean area",
+    },
+    {
+        "variable": "grd_ice_mass", "dim": "t", "units": "kg",
+        "mandatory": True, "output_interval": "forcing",
+        "standard_name": None,
+        "long_name": "Spatial integration of grounded ice volume times ice density",
+    },
+    {
+        "variable": "total_ice_mass", "dim": "t", "units": "kg",
+        "mandatory": True, "output_interval": "forcing",
+        "standard_name": None,
+        "long_name": "Total ice volume times ice density",
+    },
+    {
+        "variable": "ocean_area_grdice", "dim": "t", "units": "m2",
+        "mandatory": True, "output_interval": "forcing",
+        "standard_name": None,
+        "long_name": "Total ocean area including marine regions covered by grounded ice",
+    },
+    {
+        "variable": "ocean_area", "dim": "t", "units": "m2",
+        "mandatory": True, "output_interval": "forcing",
+        "standard_name": None,
+        "long_name": "Total ocean area excluding marine regions covered by grounded ice",
+    },
+    {
+        "variable": "maf", "dim": "t", "units": "kg",
+        "mandatory": True, "output_interval": "forcing",
+        "standard_name": "land_ice_mass_not_displacing_sea_water",
+        "long_name": "Land ice mass above flotation",
+    },
+    # --- Optional 3D ---
+    {
+        "variable": "delta_bed_east", "dim": "lat_lon_t", "units": "m",
+        "mandatory": False, "output_interval": "1000yr",
+        "standard_name": None,
+        "long_name": "Eastward horizontal solid Earth displacement",
+    },
+    {
+        "variable": "delta_bed_north", "dim": "lat_lon_t", "units": "m",
+        "mandatory": False, "output_interval": "1000yr",
+        "standard_name": None,
+        "long_name": "Northward horizontal solid Earth displacement",
+    },
+    # --- Optional spherical harmonics (degree, order) ---
+    {
+        "variable": "Clm", "dim": "degree_order", "units": "1",
+        "mandatory": False, "output_interval": "once",
+        "standard_name": None,
+        "long_name": "Cosine spherical harmonic coefficients of geoid height change",
+    },
+    {
+        "variable": "Slm", "dim": "degree_order", "units": "1",
+        "mandatory": False, "output_interval": "once",
+        "standard_name": None,
+        "long_name": "Sine spherical harmonic coefficients of geoid height change",
+    },
+]
+
+GIAMIP_VAR_NAMES = [v["variable"] for v in GIAMIP_VARIABLES]
+GIAMIP_MANDATORY_VARS = [v["variable"] for v in GIAMIP_VARIABLES if v["mandatory"]]
+GIAMIP_VAR_META = {v["variable"]: v for v in GIAMIP_VARIABLES}
+
+# Sort by descending part-count so longer names are tried first (e.g.
+# "land_ice_area_fraction" is matched before "land").
+_GIAMIP_VAR_NAMES_BY_PARTS = sorted(
+    GIAMIP_VAR_NAMES, key=lambda n: n.count("_"), reverse=True
+)
+
+
+def _parse_giamip_filename(file_name: str):
+    """Parse a GIAMIP filename into (var_name, exp_id, group, model) or None.
+
+    Convention: {var}_{exp_id}_{group}_{model}.nc
+    Variable names may contain underscores; exp_id, group, and model must not.
+    Returns None if no known variable name is found as a prefix, or if fewer
+    than 3 trailing fields remain after the variable name.
+    """
+    stem = file_name[:-3] if file_name.endswith(".nc") else file_name
+    parts = stem.split("_")
+    for var in _GIAMIP_VAR_NAMES_BY_PARTS:
+        n = var.count("_") + 1  # number of underscore-separated tokens in the var name
+        if parts[:n] == var.split("_"):
+            trailing = parts[n:]
+            if len(trailing) == 3:
+                return var, trailing[0], trailing[1], trailing[2]
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Entry points
+# ---------------------------------------------------------------------------
+
+EXPECTED_CONDA_ENV = "isschecker"
+
+
+def _check_environment() -> None:
+    active = os.environ.get("CONDA_DEFAULT_ENV", "")
+    if active != EXPECTED_CONDA_ENV:
+        print(
+            f"WARNING: expected conda environment '{EXPECTED_CONDA_ENV}' but"
+            f" '{active or '(none)'}' is active. Run 'conda activate {EXPECTED_CONDA_ENV}'"
+            " before using this script to ensure the correct package versions are loaded."
+        )
+
+
+def main() -> None:
+    _check_environment()
+    args = _parse_args()
+    run_checker(source_path=args.source_path, workdir=os.getcwd())
+
+
+def run_checker(
+    source_path: str,
+    workdir: str | None = None,
+    commit_num: str | None = None,
+) -> dict:
+    workdir = os.path.abspath(workdir or os.getcwd())
+    commit_num = _get_commit_number() if commit_num is None else commit_num
+    experiments = _load_experiments_csv(os.path.join(workdir, EXPERIMENTS_GIAMIP_CSV))
+
+    summary = _run_compliance_checker(
+        source_path=source_path,
+        commit_num=commit_num,
+        experiments=experiments,
+    )
+
+    log_path = os.path.join(source_path, "compliance_checker_log.txt")
+    log_text = ""
+    if os.path.exists(log_path):
+        with open(log_path, "r") as f:
+            log_text = f.read()
+    summary["log_path"] = log_path
+    summary["log_text"] = log_text
+    return summary
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _get_commit_number() -> str:
+    try:
+        process = subprocess.Popen(
+            ["git", "log", "--pretty=format:%h", "-n", "1"], stdout=subprocess.PIPE
+        )
+        commit_num, _ = process.communicate()
+        return commit_num.decode("UTF-8")
+    except Exception:
+        return "No commit number identified."
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Check GIAMIP simulation NetCDF datasets for compliance."
+    )
+    parser.add_argument(
+        "--source-path",
+        default=DEFAULT_SOURCE_PATH,
+        help="Directory containing the GIAMIP NetCDF files.",
+    )
+    return parser.parse_args()
+
+
+def _load_experiments_csv(file_path: str) -> list:
+    frame = pd.read_csv(file_path, delimiter=";")
+    experiments = []
+    for _, row in frame.iterrows():
+        experiments.append({
+            "experiment": row["experiment"],
+            "start_year_inf": int(row["start_year_inf"]),
+            "start_year_sup": int(row["start_year_sup"]),
+            "end_year_inf": int(row["end_year_inf"]),
+            "end_year_sup": int(row["end_year_sup"]),
+        })
+    return experiments
+
+
+def _run_compliance_checker(
+    source_path: str,
+    commit_num: str,
+    experiments: list,
+) -> dict:
+    if not os.path.isdir(source_path):
+        print(f"ERROR: Directory not found: '{source_path}'.")
+        return _empty_summary()
+
+    try:
+        log_path = os.path.join(source_path, "compliance_checker_log.txt")
+        with open(log_path, "w") as f:
+            print("-> Checking " + source_path)
+            print()
+            _write_log_header(f, commit_num, source_path, datetime.date.today())
+
+            experiment_groups = _group_files_by_experiment(source_path)
+            if not experiment_groups:
+                msg = f"No .nc files found in directory '{source_path}'."
+                print(f"ERROR: {msg}")
+                f.write(f"ERROR: {msg}\n")
+                return _empty_summary()
+
+            summary = _process_experiments(
+                log_file=f,
+                source_path=source_path,
+                experiment_groups=experiment_groups,
+                experiments=experiments,
+            )
+
+        _insert_synthesis(
+            source_path=source_path,
+            exp_counter=summary["exp_counter"],
+            file_counter=summary["file_counter"],
+            total_errors=summary["total_errors"],
+            total_file_errors=summary["total_file_errors"],
+            total_naming_errors=summary["total_naming_errors"],
+            total_num_errors=summary["total_num_errors"],
+            total_spatial_errors=summary["total_spatial_errors"],
+            total_time_errors=summary["total_time_errors"],
+            total_attr_errors=summary["total_attr_errors"],
+            report_naming_issues=summary["report_naming_issues"],
+        )
+        return summary
+
+    except TypeError as err:
+        print("Something went wrong. Error:", err)
+        return _empty_summary()
+
+
+def _empty_summary() -> dict:
+    return {
+        "exp_counter": 0,
+        "file_counter": 0,
+        "total_errors": 0,
+        "total_naming_errors": 0,
+        "total_num_errors": 0,
+        "total_spatial_errors": 0,
+        "total_time_errors": 0,
+        "total_attr_errors": 0,
+        "total_file_errors": 0,
+        "report_naming_issues": [],
+    }
+
+
+def _group_files_by_experiment(source_path: str) -> dict:
+    groups = {}
+    for fname in sorted(os.listdir(source_path)):
+        if not fname.endswith(".nc"):
+            continue
+        parsed = _parse_giamip_filename(fname)
+        exp_name = parsed[1] if parsed is not None else "_unknown"
+        groups.setdefault(exp_name, []).append(fname)
+    return groups
+
+
+def _process_experiments(
+    log_file,
+    source_path: str,
+    experiment_groups: dict,
+    experiments: list,
+) -> dict:
+    total_naming_errors = 0
+    total_num_errors = 0
+    total_spatial_errors = 0
+    total_time_errors = 0
+    total_attr_errors = 0
+    total_file_errors = 0
+    report_naming_issues = []
+    file_counter = 0
+    exp_counter = 0
+
+    for experiment_name, exp_files in experiment_groups.items():
+        exp_counter += 1
+        exp_summary = _process_single_experiment(
+            log_file=log_file,
+            source_path=source_path,
+            experiment_name=experiment_name,
+            exp_files=exp_files,
+            experiments=experiments,
+            report_naming_issues=report_naming_issues,
+        )
+        file_counter += exp_summary["file_counter"]
+        total_naming_errors += exp_summary["exp_naming_errors"]
+        total_num_errors += exp_summary["exp_num_errors"]
+        total_spatial_errors += exp_summary["exp_spatial_errors"]
+        total_time_errors += exp_summary["exp_time_errors"]
+        total_attr_errors += exp_summary["exp_attr_errors"]
+        total_file_errors += exp_summary["exp_file_errors"]
+
+        _print_experiment_summary(exp_summary["experiment_name"], exp_summary["exp_errors"])
+
+    total_errors = (
+        total_naming_errors + total_num_errors + total_spatial_errors
+        + total_time_errors + total_attr_errors + total_file_errors
+    )
+    _print_total_summary(source_path, total_errors)
+
+    return {
+        "exp_counter": exp_counter,
+        "file_counter": file_counter,
+        "total_errors": total_errors,
+        "total_naming_errors": total_naming_errors,
+        "total_num_errors": total_num_errors,
+        "total_spatial_errors": total_spatial_errors,
+        "total_time_errors": total_time_errors,
+        "total_attr_errors": total_attr_errors,
+        "total_file_errors": total_file_errors,
+        "report_naming_issues": report_naming_issues,
+    }
+
+
+def _process_single_experiment(
+    log_file,
+    source_path: str,
+    experiment_name: str,
+    exp_files: list,
+    experiments: list,
+    report_naming_issues: list,
+) -> dict:
+    exp_naming_errors = 0
+    exp_num_errors = 0
+    exp_spatial_errors = 0
+    exp_time_errors = 0
+    exp_attr_errors = 0
+    exp_file_errors = 0
+
+    known_exp_names = [e["experiment"] for e in experiments]
+
+    log_file.write("\n ")
+    log_file.write("**********************************************************\n")
+    log_file.write(f" ** Experiment: {experiment_name} \n ")
+    log_file.write("**********************************************************\n")
+    log_file.write("\n ")
+
+    if experiment_name not in known_exp_names:
+        log_file.write(
+            f"ERROR: The compliance check is ignored for experiment '{experiment_name}'"
+            f" as it is not in {known_exp_names}.\n"
+        )
+        exp_naming_errors += 1
+        report_naming_issues.append(
+            f"Compliance check ignored: experiment '{experiment_name}' not in the experiments list."
+        )
+        return {
+            "file_counter": 0,
+            "experiment_name": experiment_name,
+            "exp_errors": exp_naming_errors,
+            "exp_naming_errors": exp_naming_errors,
+            "exp_num_errors": 0,
+            "exp_spatial_errors": 0,
+            "exp_time_errors": 0,
+            "exp_attr_errors": 0,
+            "exp_file_errors": 0,
+        }
+
+    # Check mandatory variables
+    present_vars = set()
+    for f in exp_files:
+        parsed = _parse_giamip_filename(f)
+        if parsed is not None:
+            present_vars.add(parsed[0])
+    missing_mandatory = [v for v in GIAMIP_MANDATORY_VARS if v not in present_vars]
+    if not missing_mandatory:
+        log_file.write(
+            f"Mandatory variables test: {experiment_name}: all mandatory variables present.\n"
+        )
+    else:
+        log_file.write(
+            f"ERROR: In experiment {experiment_name}, these mandatory variable(s) are missing:"
+            f" {missing_mandatory}\n"
+        )
+        exp_file_errors += len(missing_mandatory)
+
+    file_counter = 0
+    for fname in tqdm(exp_files):
+        file_counter += 1
+        file_summary = _process_single_file(
+            log_file=log_file,
+            source_path=source_path,
+            file=fname,
+            experiment_name=experiment_name,
+            experiments=experiments,
+            report_naming_issues=report_naming_issues,
+        )
+        exp_naming_errors += file_summary["var_naming_errors"]
+        exp_num_errors += file_summary["var_num_errors"]
+        exp_spatial_errors += file_summary["var_spatial_errors"]
+        exp_time_errors += file_summary["var_time_errors"]
+        exp_attr_errors += file_summary["var_attr_errors"]
+
+    exp_errors = (
+        exp_naming_errors + exp_num_errors + exp_spatial_errors
+        + exp_time_errors + exp_attr_errors + exp_file_errors
+    )
+    return {
+        "file_counter": file_counter,
+        "experiment_name": experiment_name,
+        "exp_errors": exp_errors,
+        "exp_naming_errors": exp_naming_errors,
+        "exp_num_errors": exp_num_errors,
+        "exp_spatial_errors": exp_spatial_errors,
+        "exp_time_errors": exp_time_errors,
+        "exp_attr_errors": exp_attr_errors,
+        "exp_file_errors": exp_file_errors,
+    }
+
+
+def _process_single_file(
+    log_file,
+    source_path: str,
+    file: str,
+    experiment_name: str,
+    experiments: list,
+    report_naming_issues: list,
+) -> dict:
+    zero = {"var_naming_errors": 0, "var_num_errors": 0,
+            "var_spatial_errors": 0, "var_time_errors": 0, "var_attr_errors": 0}
+
+    parsed = _parse_giamip_filename(file)
+    var_name = parsed[0] if parsed is not None else file[:-3].split("_")[0]
+
+    # Open dataset (decode_times=False so we can inspect encoding)
+    try:
+        ds = xr.open_dataset(os.path.join(source_path, file), decode_times=False)
+    except Exception as e:
+        log_file.write(f" - ERROR: Cannot open {file}: {e}\n")
+        return {**zero, "var_naming_errors": 1}
+
+    naming_errors, num_errors, spatial_errors, time_errors, attr_errors = _run_variable_checks(
+        log_file=log_file,
+        ds=ds,
+        file_name=file,
+        var_name=var_name,
+        experiment_name=experiment_name,
+        experiments=experiments,
+        report_naming_issues=report_naming_issues,
+    )
+
+    total = naming_errors + num_errors + spatial_errors + time_errors + attr_errors
+    log_file.write("\n")
+    log_file.write("----------------------------------------------------------\n")
+    log_file.write(f"{experiment_name} - {var_name} - File: {file}\n")
+    if total > 0:
+        log_file.write(f"{total} error(s). Please review before sharing.\n")
+    else:
+        log_file.write("No errors. Good job !\n")
+    log_file.write("No warnings.\n")
+    log_file.write("----------------------------------------------------------\n")
+
+    return {
+        "var_naming_errors": naming_errors,
+        "var_num_errors": num_errors,
+        "var_spatial_errors": spatial_errors,
+        "var_time_errors": time_errors,
+        "var_attr_errors": attr_errors,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Check functions
+# ---------------------------------------------------------------------------
+
+def _check_naming(
+    log_file,
+    file_name: str,
+    var_name: str,
+    experiment_name: str,
+    experiments: list,
+    report_naming_issues: list,
+) -> int:
+    errors = 0
+    log_file.write("NAMING Tests \n")
+
+    parsed = _parse_giamip_filename(file_name)
+    if parsed is None:
+        log_file.write(
+            f" - ERROR: filename '{file_name}' does not follow the convention"
+            f" {{var}}_{{exp_id}}_{{group}}_{{model}}.nc — no known GIAMIP variable"
+            f" found as a prefix, or wrong number of trailing fields.\n"
+        )
+        report_naming_issues.append(f"Compliance check ignored: '{file_name}' wrong field count.")
+        return errors + 1
+
+    if var_name not in GIAMIP_VAR_NAMES:
+        log_file.write(
+            f" - ERROR: variable '{var_name}' is not a recognised GIAMIP variable name.\n"
+        )
+        errors += 1
+
+    known_exp_names = [e["experiment"] for e in experiments]
+    if experiment_name not in known_exp_names:
+        log_file.write(
+            f" - ERROR: experiment '{experiment_name}' is not in experiments_giamip.csv.\n"
+        )
+        errors += 1
+
+    if errors == 0:
+        log_file.write(f" - Filename convention: OK\n")
+    return errors
+
+
+def _check_numerical(
+    log_file,
+    ds: xr.Dataset,
+    var_name: str,
+    expected_units: str,
+) -> int:
+    errors = 0
+    log_file.write("NUMERICAL Tests \n")
+
+    if var_name not in ds:
+        log_file.write(f" - ERROR: variable '{var_name}' not found in dataset.\n")
+        return errors + 1
+
+    # Units check
+    actual_units = ds[var_name].attrs.get("units", None)
+    if actual_units is None:
+        log_file.write(f" - ERROR: variable '{var_name}' has no 'units' attribute.\n")
+        errors += 1
+    elif actual_units == expected_units:
+        log_file.write(f" - Units '{actual_units}': OK\n")
+    else:
+        log_file.write(
+            f" - ERROR: units '{actual_units}', expected '{expected_units}'.\n"
+        )
+        errors += 1
+
+    # No NaN / missing values
+    data = ds[var_name].values
+    if np.isnan(data).any():
+        log_file.write(f" - ERROR: variable '{var_name}' contains NaN / missing values.\n")
+        errors += 1
+    else:
+        log_file.write(f" - No missing values: OK\n")
+
+    # Mask variables must have values in [0, 1]
+    if var_name in MASK_VARIABLES:
+        vmin = float(np.nanmin(data))
+        vmax = float(np.nanmax(data))
+        if vmin < 0.0 or vmax > 1.0:
+            log_file.write(
+                f" - ERROR: mask variable '{var_name}' has values outside [0, 1]"
+                f" (min={vmin}, max={vmax}).\n"
+            )
+            errors += 1
+        else:
+            log_file.write(f" - Mask range [0, 1]: OK\n")
+
+    return errors
+
+
+def _check_spatial(log_file, ds: xr.Dataset) -> int:
+    errors = 0
+    log_file.write("SPATIAL Tests \n")
+
+    for coord in ("lat", "lon"):
+        if coord not in ds.coords:
+            log_file.write(f" - ERROR: coordinate '{coord}' not found.\n")
+            errors += 1
+
+    if errors:
+        return errors
+
+    nlat = int(ds["lat"].size)
+    nlon = int(ds["lon"].size)
+
+    if nlat == GIAMIP_GRID_NLAT:
+        log_file.write(f" - Latitude size ({nlat} nodes): OK\n")
+    else:
+        log_file.write(
+            f" - ERROR: latitude has {nlat} nodes, expected {GIAMIP_GRID_NLAT}.\n"
+        )
+        errors += 1
+
+    if nlon == GIAMIP_GRID_NLON:
+        log_file.write(f" - Longitude size ({nlon} nodes): OK\n")
+    else:
+        log_file.write(
+            f" - ERROR: longitude has {nlon} nodes, expected {GIAMIP_GRID_NLON}.\n"
+        )
+        errors += 1
+
+    lat_vals = ds["lat"].values.astype(float)
+    lon_vals = ds["lon"].values.astype(float)
+
+    lat_min, lat_max = float(lat_vals.min()), float(lat_vals.max())
+    lon_min, lon_max = float(lon_vals.min()), float(lon_vals.max())
+
+    if abs(lat_min - GIAMIP_LAT_EXTENT[0]) <= GIAMIP_COORD_TOL:
+        log_file.write(f" - Latitude south edge ({lat_min}°): OK\n")
+    else:
+        log_file.write(
+            f" - ERROR: latitude south edge {lat_min}°, expected {GIAMIP_LAT_EXTENT[0]}°.\n"
+        )
+        errors += 1
+
+    if abs(lat_max - GIAMIP_LAT_EXTENT[1]) <= GIAMIP_COORD_TOL:
+        log_file.write(f" - Latitude north edge ({lat_max}°): OK\n")
+    else:
+        log_file.write(
+            f" - ERROR: latitude north edge {lat_max}°, expected {GIAMIP_LAT_EXTENT[1]}°.\n"
+        )
+        errors += 1
+
+    if abs(lon_min - GIAMIP_LON_EXTENT[0]) <= GIAMIP_COORD_TOL:
+        log_file.write(f" - Longitude west edge ({lon_min}°): OK\n")
+    else:
+        log_file.write(
+            f" - ERROR: longitude west edge {lon_min}°, expected {GIAMIP_LON_EXTENT[0]}°.\n"
+        )
+        errors += 1
+
+    if lon_max < GIAMIP_LON_EXTENT[1]:
+        log_file.write(f" - Longitude east edge ({lon_max}° < 360°): OK\n")
+    else:
+        log_file.write(
+            f" - ERROR: longitude east edge {lon_max}° must be < {GIAMIP_LON_EXTENT[1]}°.\n"
+        )
+        errors += 1
+
+    if _strictly_increasing(lat_vals):
+        log_file.write(" - Latitude increases south-to-north: OK\n")
+    else:
+        log_file.write(" - ERROR: latitude is not monotonically increasing (south-to-north).\n")
+        errors += 1
+
+    if _strictly_increasing(lon_vals):
+        log_file.write(" - Longitude increases west-to-east: OK\n")
+    else:
+        log_file.write(" - ERROR: longitude is not monotonically increasing (west-to-east).\n")
+        errors += 1
+
+    return errors
+
+
+def _check_time(
+    log_file,
+    ds: xr.Dataset,
+    experiments: list,
+    experiment_name: str,
+    output_interval: str,
+) -> int:
+    errors = 0
+    log_file.write("TIME Tests \n")
+
+    time_dim = next((d for d in ("time", "t") if d in ds.dims), None)
+    if time_dim is None:
+        log_file.write(" - ERROR: time dimension not found.\n")
+        return errors + 1
+
+    unlimited_dims = ds.encoding.get("unlimited_dims", set())
+    if time_dim in unlimited_dims:
+        log_file.write(f" - Time is a record (unlimited) dimension: OK\n")
+    else:
+        log_file.write(
+            f" - ERROR: dimension '{time_dim}' is not a record (unlimited) dimension.\n"
+        )
+        errors += 1
+
+    try:
+        decoded = xr.decode_cf(ds, decode_times=xr.coders.CFDatetimeCoder(use_cftime=True))
+    except Exception as err:
+        log_file.write(f" - ERROR: time coordinate could not be decoded: {err}\n")
+        return errors + 1
+
+    time_vals = decoded["time"].values
+
+    if not _strictly_increasing(time_vals):
+        log_file.write(" - ERROR: time is not monotonically increasing.\n")
+        return errors + 1
+    log_file.write(" - Time is monotonically increasing: OK\n")
+
+    # Time step check for 1000-year variables
+    if output_interval == "1000yr" and len(time_vals) > 1:
+        t0, t1 = time_vals[0], time_vals[1]
+        try:
+            year_step = t1.year - t0.year
+            if TIME_STEP_MIN_YEARS <= year_step <= TIME_STEP_MAX_YEARS:
+                log_file.write(f" - Time step {year_step} years: OK\n")
+            else:
+                log_file.write(
+                    f" - ERROR: time step {year_step} years; expected "
+                    f"[{TIME_STEP_MIN_YEARS}, {TIME_STEP_MAX_YEARS}] years.\n"
+                )
+                errors += 1
+        except Exception as err:
+            log_file.write(f" - WARNING: could not determine time step: {err}\n")
+
+    # Start/end year check against experiments CSV
+    exp = next((e for e in experiments if e["experiment"] == experiment_name), None)
+    if exp is None:
+        return errors
+
+    try:
+        start_year = time_vals[0].year
+        end_year = time_vals[-1].year
+
+        if exp["start_year_inf"] <= start_year <= exp["start_year_sup"]:
+            log_file.write(
+                f" - Start year {start_year} in [{exp['start_year_inf']}, "
+                f"{exp['start_year_sup']}]: OK\n"
+            )
+        else:
+            log_file.write(
+                f" - ERROR: start year {start_year}; expected in "
+                f"[{exp['start_year_inf']}, {exp['start_year_sup']}].\n"
+            )
+            errors += 1
+
+        if exp["end_year_inf"] <= end_year <= exp["end_year_sup"]:
+            log_file.write(
+                f" - End year {end_year} in [{exp['end_year_inf']}, "
+                f"{exp['end_year_sup']}]: OK\n"
+            )
+        else:
+            log_file.write(
+                f" - ERROR: end year {end_year}; expected in "
+                f"[{exp['end_year_inf']}, {exp['end_year_sup']}].\n"
+            )
+            errors += 1
+
+    except Exception as err:
+        log_file.write(f" - WARNING: could not determine start/end year: {err}\n")
+
+    return errors
+
+
+def _check_attributes(
+    log_file,
+    ds: xr.Dataset,
+    var_name: str,
+    var_meta: dict,
+    is_spatial: bool,
+    has_time: bool,
+) -> int:
+    errors = 0
+    log_file.write("ATTRIBUTE Tests \n")
+
+    # --- Global attributes ---
+    global_errors = 0
+    for attr in ("group", "model", "contact_name", "contact_email"):
+        if attr not in ds.attrs:
+            log_file.write(f" - ERROR (attributes): global attribute '{attr}' is missing.\n")
+            global_errors += 1
+
+    ref_frame = ds.attrs.get("reference_frame")
+    if ref_frame is None:
+        log_file.write(" - ERROR (attributes): global attribute 'reference_frame' is missing.\n")
+        global_errors += 1
+    elif ref_frame.upper() != "CM":
+        log_file.write(
+            f" - ERROR (attributes): 'reference_frame' is '{ref_frame}', expected 'CM'.\n"
+        )
+        global_errors += 1
+
+    if global_errors == 0:
+        log_file.write(" - Global attributes: OK\n")
+    errors += global_errors
+
+    # --- Coordinate attributes ---
+    coord_errors = 0
+    if has_time:
+        time_coord = next((n for n in ("time", "t") if n in ds.coords), None)
+        if time_coord is None:
+            log_file.write(" - ERROR (attributes): time coordinate not found.\n")
+            coord_errors += 1
+        else:
+            combined = {**ds[time_coord].encoding, **ds[time_coord].attrs}
+            for attr in ("units", "calendar"):
+                if attr not in combined:
+                    log_file.write(
+                        f" - ERROR (attributes): time coordinate missing '{attr}'.\n"
+                    )
+                    coord_errors += 1
+            if "units" in combined:
+                u = combined["units"]
+                if not (isinstance(u, str) and u.startswith("days since")):
+                    log_file.write(
+                        f" - ERROR (attributes): time units '{u}' must start with 'days since'.\n"
+                    )
+                    coord_errors += 1
+
+    if is_spatial:
+        for coord in ("lat", "lon"):
+            if coord in ds.coords:
+                if "units" not in ds[coord].attrs:
+                    log_file.write(
+                        f" - ERROR (attributes): coordinate '{coord}' missing 'units'.\n"
+                    )
+                    coord_errors += 1
+            else:
+                log_file.write(f" - ERROR (attributes): coordinate '{coord}' not found.\n")
+                coord_errors += 1
+
+    if coord_errors == 0:
+        log_file.write(" - Coordinate attributes: OK\n")
+    errors += coord_errors
+
+    # --- Variable attributes ---
+    var_errors = 0
+    if var_name in ds:
+        if "long_name" not in ds[var_name].attrs:
+            log_file.write(
+                f" - ERROR (attributes): variable '{var_name}' missing 'long_name'.\n"
+            )
+            var_errors += 1
+
+        expected_sn = var_meta.get("standard_name")
+        if expected_sn is not None:
+            actual_sn = ds[var_name].attrs.get("standard_name")
+            if actual_sn is None:
+                log_file.write(
+                    f" - ERROR (attributes): variable '{var_name}' missing 'standard_name'.\n"
+                )
+                var_errors += 1
+            elif actual_sn != expected_sn:
+                log_file.write(
+                    f" - ERROR (attributes): standard_name '{actual_sn}'"
+                    f" does not match expected '{expected_sn}'.\n"
+                )
+                var_errors += 1
+
+    if var_errors == 0:
+        log_file.write(" - Variable attributes: OK\n")
+    errors += var_errors
+
+    # --- dtype: all GIAMIP variables must be float32 ---
+    dtype_errors = 0
+    if var_name in ds and ds[var_name].dtype != np.float32:
+        log_file.write(
+            f" - ERROR (attributes): variable '{var_name}' dtype is {ds[var_name].dtype},"
+            f" expected float32.\n"
+        )
+        dtype_errors += 1
+    if dtype_errors == 0:
+        log_file.write(f" - Dtype float32: OK\n")
+    errors += dtype_errors
+
+    return errors
+
+
+def _run_variable_checks(
+    log_file,
+    ds: xr.Dataset,
+    file_name: str,
+    var_name: str,
+    experiment_name: str,
+    experiments: list,
+    report_naming_issues: list,
+) -> tuple[int, int, int, int, int]:
+    naming_errors = 0
+    num_errors = 0
+    spatial_errors = 0
+    time_errors = 0
+    attr_errors = 0
+
+    log_file.write(" \n")
+    log_file.write(f"Experiment: {experiment_name} - File: {file_name}\n")
+    log_file.write(" \n")
+
+    naming_errors += _check_naming(
+        log_file, file_name, var_name, experiment_name, experiments, report_naming_issues
+    )
+    if naming_errors:
+        return naming_errors, num_errors, spatial_errors, time_errors, attr_errors
+
+    var_meta = GIAMIP_VAR_META.get(var_name, {})
+    dim_type = var_meta.get("dim", "t")
+    is_spatial = dim_type == "lat_lon_t"
+    has_time = dim_type in ("lat_lon_t", "t")
+
+    log_file.write(f"** Tested Variable: {var_name}\n \n")
+
+    num_errors += _check_numerical(log_file, ds, var_name, var_meta.get("units", ""))
+
+    if is_spatial:
+        spatial_errors += _check_spatial(log_file, ds)
+
+    if has_time:
+        time_errors += _check_time(
+            log_file, ds, experiments, experiment_name,
+            var_meta.get("output_interval", "forcing"),
+        )
+
+    attr_errors += _check_attributes(log_file, ds, var_name, var_meta, is_spatial, has_time)
+
+    return naming_errors, num_errors, spatial_errors, time_errors, attr_errors
+
+
+# ---------------------------------------------------------------------------
+# Logging helpers
+# ---------------------------------------------------------------------------
+
+def _print_experiment_summary(experiment_name: str, exp_errors: int) -> None:
+    print(f"{experiment_name}: compliance check processed.")
+    if exp_errors > 0:
+        print(f"Found {exp_errors} error(s). Check compliance_checker_log.txt for details.")
+    else:
+        print("Successfully verified with no errors")
+    print()
+
+
+def _print_total_summary(source_path: str, total_errors: int) -> None:
+    print("-------------------------------------------------------------------------")
+    print(f"{source_path}: compliance check processed.")
+    if total_errors > 0:
+        print(f"Found a total of {total_errors} error(s). Check compliance_checker_log.txt.")
+    else:
+        print("Successfully verified with no errors")
+    print("-------------------------------------------------------------------------")
+
+
+def _strictly_increasing(values) -> bool:
+    return all(x < y for x, y in zip(values, values[1:]))
+
+
+def _write_log_header(log_file, commit_num: str, source_path: str, today: datetime.date) -> None:
+    log_file.write(
+        "************************************************************************************\n"
+    )
+    log_file.write(
+        "*************     GIA Model Simulations - GIAMIP Compliance Checker    *************\n"
+    )
+    log_file.write(
+        "************************************************************************************\n"
+    )
+    log_file.write(f"Commit Number: {commit_num} \n")
+    log_file.write("verification criteria: GIAMIP data request\n")
+    log_file.write(f"date: {today.strftime('%Y/%m/%d')}\n")
+    log_file.write("source: https://github.com/ismip/ISM_SimulationChecker \n")
+    log_file.write(" \n")
+    log_file.write(
+        "------------------------------------------------------------------------------------\n"
+    )
+    log_file.write(f"Verified directory: {source_path} \n")
+    log_file.write(
+        "------------------------------------------------------------------------------------\n"
+    )
+    log_file.write(" \n")
+    log_file.write(" \n")
+    log_file.write(" \n")
+    log_file.write(" \n")
+    log_file.write(
+        "====================================================================================\n"
+    )
+    log_file.write(
+        "================                DETAILED RESULTS                    ================\n"
+    )
+    log_file.write(
+        "====================================================================================\n"
+    )
+    log_file.write("Hint: Use Ctrl+F to look for specific problems. \n")
+    log_file.write(" \n")
+
+
+def _insert_synthesis(
+    source_path: str,
+    exp_counter: int,
+    file_counter: int,
+    total_errors: int,
+    total_file_errors: int,
+    total_naming_errors: int,
+    total_num_errors: int,
+    total_spatial_errors: int,
+    total_time_errors: int,
+    total_attr_errors: int,
+    report_naming_issues: list,
+) -> None:
+    with open(os.path.join(source_path, "compliance_checker_log.txt"), "r") as f:
+        contents = f.readlines()
+
+    iline = 11
+    contents.insert(iline, f"{exp_counter} experiments checked.\n"); iline += 1
+    contents.insert(iline, f"{file_counter} files checked.\n"); iline += 2
+    contents.insert(iline, f"{total_errors} error(s) detected.\n"); iline += 1
+    contents.insert(iline, f"  - Mandatory variables: {total_file_errors} error(s)\n"); iline += 1
+    contents.insert(iline, f"  - Naming Tests       : {total_naming_errors} error(s)\n"); iline += 1
+    contents.insert(iline, f"  - Numerical Tests    : {total_num_errors} error(s)\n"); iline += 1
+    contents.insert(iline, f"  - Spatial Tests      : {total_spatial_errors} error(s)\n"); iline += 1
+    contents.insert(iline, f"  - Time Tests         : {total_time_errors} error(s)\n"); iline += 1
+    contents.insert(iline, f"  - Attribute Tests    : {total_attr_errors} error(s)\n"); iline += 2
+    contents.insert(iline, "0 warning(s) detected.\n"); iline += 2
+
+    if total_naming_errors > 0:
+        contents.insert(iline, "Naming tests errors report: \n"); iline += 1
+        for j, issue in enumerate(report_naming_issues):
+            contents.insert(iline + j, f"  - {issue}\n")
+        contents.insert(iline + len(report_naming_issues), "\n")
+
+    with open(os.path.join(source_path, "compliance_checker_log.txt"), "w") as f:
+        f.writelines(contents)
+
+
+if __name__ == "__main__":
+    main()

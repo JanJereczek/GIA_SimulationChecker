@@ -1,14 +1,14 @@
-# Ice Sheet Simulation Compliance Checker
+# GIAMIP GIA Simulation Compliance Checker
 
-Checks ISMIP7 NetCDF simulation datasets for compliance with the [ISMIP7 data request conventions](https://www.ismip.org/). The following categories are validated for every file:
+Checks GIAMIP NetCDF simulation datasets for compliance with the GIAMIP data request conventions. The following categories are validated for every file:
 
-1. **Naming** — variable name, region field, ISM member id (`mNNN`), ESM name (CMIP6/CMIP7 registry), forcing member id (`fNNN`), set counter (`[C|E|P]NNN`), and year range (`YYYY-YYYY` matching the actual time axis).
-2. **Numerical** — units match the data request; all values lie within the allowed min/max range for the relevant region; array is not entirely fill values.
-3. **Spatial** *(xyt variables only)* — grid corners lie within the expected AIS or GrIS extents; resolution is one of the allowed values; x and y cell size are equal.
-4. **Time** — time dimension is present, unlimited, and monotonically increasing; annual cadence; experiment end date and duration match `experiments_ismip7.csv`.
-5. **Attributes** — required global and coordinate attributes are present and have correct values; `standard_name` matches data request; `_FillValue` equals the NetCDF4 default for the variable's dtype; variable and time are float32; `scale_factor` and `add_offset` are not allowed.
+1. **Naming** — variable name, experiment ID, group name, and model name; mandatory variables must all be present.
+2. **Numerical** — units match the data request; no NaN values are present; mask variables (`ocean_area_fraction`, `land_ice_area_fraction`) have all values within [0, 1].
+3. **Spatial** *(lat/lon/time variables only)* — global Gaussian grid of 257 × 513 nodes; latitude spans [−90, 90]; longitude spans [0, 360).
+4. **Time** — time axis is monotonically increasing; start and end years fall within the allowed range for the experiment; variables with `1000yr` output interval use approximately 1000-year time steps.
+5. **Attributes** — required global attributes (`group`, `model`, `contact_name`, `contact_email`, `reference_frame`) are present; `reference_frame` must be `CM`; time units start with `days since`; all data variables are float32.
 
-Compliance criteria are defined in `conventions/ISMIP7_variable_request.xlsx` (variable metadata) and `experiments_ismip7.csv` (valid experiment date ranges).
+Compliance criteria are defined in `giamip_compliance_checker.py` (variable metadata) and `experiments_giamip.csv` (valid experiment year ranges).
 
 ---
 
@@ -19,61 +19,104 @@ conda env create -f isschecker_env.yml
 conda activate isschecker
 ```
 
-Dependencies: Python 3.14, `numpy` 2.4, `pandas` 3.0, `openpyxl` 3.1, `xarray` 2026.4, `cftime` 1.6, `netCDF4` 1.7, `tqdm` 4.67.
+Dependencies: Python 3.14, `numpy` 2.4, `xarray` 2026.4, `cftime` 1.6, `netCDF4` 1.7, `tqdm` 4.67.
 
 ---
 
 ## Running the checker
 
-The script must be run from the repository root. It writes `compliance_checker_log.txt` into the `--source-path` directory.
+The script must be run from the repository root. It writes `giamip_compliance_checker_log.txt` into the `--source-path` directory.
 
 ```bash
-# Check x,y,t (3D spatial) variables
-python compliance_checker.py --source-path ./Models/GrIS/ISMIP7/SYNTH1/CORE --variable-list ismip7_xyt
-
-# Check scalar (time-only) variables
-python compliance_checker.py --source-path ./Models/AIS/ISMIP7/SYNTH1/CORE --variable-list ismip7_scalars
-
-# Check both
-python compliance_checker.py --source-path ./Models/GrIS/ISMIP7/SYNTH1/CORE --variable-list ismip7
+python giamip_compliance_checker.py --source-path ./Models/GIAMIP/Exp01/CORE
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--source-path` | `./Models/GrIS/ISMIP7/SYNTH1/CORE` | Directory containing `.nc` files to check |
-| `--variable-list` | `ismip7_scalars` | `ismip7_xyt`, `ismip7_scalars`, or `ismip7` (both) |
+| `--source-path` | `./Models/GIAMIP/Exp01/CORE` | Directory containing `.nc` files to check |
+
+---
+
+## File naming convention
+
+Each output file must be named:
+
+```
+{variable_name}_{experiment_id}_{group}_{model}.nc
+```
+
+For example: `bed_Exp01_AWI_MyModel.nc`
+
+Valid experiment IDs are defined in `experiments_giamip.csv`.
+
+---
+
+## Variables
+
+Full variable metadata (long names, standard names, units, precision, reference surface) is in [variables.md](variables.md).
+
+| Variable | Dimensions | Mandatory | Output interval |
+|----------|-----------|-----------|-----------------|
+| `bed` | lat, lon, time | yes | 1000 yr |
+| `maf` | lat, lon, time | yes | 1000 yr |
+| `rsl` | lat, lon, time | yes | 1000 yr |
+| `delta_g` | lat, lon, time | yes | 1000 yr |
+| `delta_rsl` | lat, lon, time | yes | 1000 yr |
+| `ocean_area_fraction` | lat, lon, time | yes | 1000 yr |
+| `land_ice_area_fraction` | lat, lon, time | yes | 1000 yr |
+| `grd_ice_mass` | time | yes | 1000 yr |
+| `mean_delta_g` | time | yes | 1000 yr |
+| `Clm` | degree, order | yes | snapshot |
+| `Slm` | degree, order | yes | snapshot |
+| `oaf_10yr` | lat, lon, time | no | 10 yr |
+| `liaf_10yr` | lat, lon, time | no | 10 yr |
+| `grd_ice_mass_10yr` | time | no | 10 yr |
+| `mean_delta_g_10yr` | time | no | 10 yr |
 
 ---
 
 ## Generating synthetic test files
 
-`generate/generate_test_files.py` creates ISMIP7-style NetCDF test files with synthetic data. See [generate/README.md](generate/README.md) for full options and examples.
+`generate/generate_giamip_test_files.py` creates GIAMIP-compliant NetCDF test files with synthetic data.
 
 ```bash
 conda activate isschecker
 
-# Generate 286-year GrIS ctrl xyt variables
-python generate/generate_test_files.py --grid GrIS_16000m --scenario ctrl --xyt --nyears 286 --start-year 2015
+# Generate all mandatory variables for Exp01
+python generate/generate_giamip_test_files.py --experiment-id Exp01 --group AWI --model MyModel
 
-# Generate 286-year AIS ctrl scalar variables
-python generate/generate_test_files.py --grid AIS_16000m --scenario ctrl --scalars --nyears 286 --start-year 2015
+# Generate a single variable
+python generate/generate_giamip_test_files.py --variable bed --experiment-id Exp01 --group AWI --model MyModel
 
-# List available grids
-python generate/generate_test_files.py --list-grids
+# Custom time range and step count
+python generate/generate_giamip_test_files.py --start-year 1 --end-year 2001 --n-steps 3
 ```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--output-dir` | `./Models/GIAMIP/Exp01/CORE` | Directory for output files |
+| `--experiment-id` | `Exp01` | Experiment identifier |
+| `--group` | `TESTGROUP` | Group name |
+| `--model` | `TESTMODEL` | Model name |
+| `--start-year` | `1` | First year of the time axis |
+| `--end-year` | `1001` | Last year of the time axis |
+| `--n-steps` | `2` | Number of time steps |
+| `--variable` | *(all mandatory)* | Generate a single variable only |
 
 ---
 
-## Running Tests
+## Running tests
 
-The regression suite uses `pytest` and creates temporary synthetic datasets, then mutates them to verify expected checker failures for naming, missing variables, time-axis problems, and missing attributes.
+The regression suite uses `pytest` and creates temporary synthetic datasets, then mutates them to verify expected checker failures for naming, missing variables, numerical, spatial, time-axis, and attribute errors.
 
 ```bash
-pytest -v tests/test_compliance_checker.py
+pytest -v tests/test_giamip_compliance_checker.py
 ```
 
 If you want to retain the files generated during testing you can use:
+
+```bash
+pytest -v tests/test_giamip_compliance_checker.py --basetemp=/tmp/pytest_tmp
 ```
-pytest -v tests/test_compliance_checker.py --basetemp=/tmp/pytest_tmp
-```
-The files will then be left in `/tmp/pytest_tmp`.  Otherwise, they are cleaned up once tests pass.
+
+The files will then be left in `/tmp/pytest_tmp`. Otherwise, they are cleaned up once tests pass.
