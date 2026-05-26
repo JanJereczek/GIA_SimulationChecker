@@ -58,20 +58,20 @@ Full variable metadata (long names, standard names, units, precision, reference 
 | Variable | Dimensions | Mandatory | Output interval |
 |----------|-----------|-----------|-----------------|
 | `bed` | lat, lon, time | yes | 1000 yr |
-| `maf` | lat, lon, time | yes | 1000 yr |
-| `rsl` | lat, lon, time | yes | 1000 yr |
 | `delta_g` | lat, lon, time | yes | 1000 yr |
 | `delta_rsl` | lat, lon, time | yes | 1000 yr |
-| `ocean_area_fraction` | lat, lon, time | yes | 1000 yr |
-| `land_ice_area_fraction` | lat, lon, time | yes | 1000 yr |
-| `grd_ice_mass` | time | yes | 1000 yr |
+| `ocean_area_fraction` | lat, lon, time | yes | forcing |
+| `land_ice_area_fraction` | lat, lon, time | yes | forcing |
 | `mean_delta_g` | time | yes | 1000 yr |
-| `Clm` | degree, order | yes | snapshot |
-| `Slm` | degree, order | yes | snapshot |
-| `oaf_10yr` | lat, lon, time | no | 10 yr |
-| `liaf_10yr` | lat, lon, time | no | 10 yr |
-| `grd_ice_mass_10yr` | time | no | 10 yr |
-| `mean_delta_g_10yr` | time | no | 10 yr |
+| `grd_ice_mass` | time | yes | forcing |
+| `total_ice_mass` | time | yes | forcing |
+| `ocean_area_grdice` | time | yes | forcing |
+| `ocean_area` | time | yes | forcing |
+| `maf` | time | yes | forcing |
+| `delta_bed_east` | lat, lon, time | no | 1000 yr |
+| `delta_bed_north` | lat, lon, time | no | 1000 yr |
+| `Clm` | degree, order | no | snapshot |
+| `Slm` | degree, order | no | snapshot |
 
 ---
 
@@ -83,10 +83,10 @@ Full variable metadata (long names, standard names, units, precision, reference 
 conda activate isschecker
 
 # Generate all mandatory variables for Exp01
-python generate/generate_giamip_test_files.py --experiment-id Exp01 --group AWI --model MyModel
+python generate/generate_giamip_test_files.py --experiment-id Exp01 --group MYGROUP --model MyModel
 
 # Generate a single variable
-python generate/generate_giamip_test_files.py --variable bed --experiment-id Exp01 --group AWI --model MyModel
+python generate/generate_giamip_test_files.py --variable bed --experiment-id Exp01 --group MYGROUP --model MyModel
 
 # Custom time range and step count
 python generate/generate_giamip_test_files.py --start-year 1 --end-year 2001 --n-steps 3
