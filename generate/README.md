@@ -2,7 +2,7 @@
 
 `generate/generate_test_files.py` creates ISMIP7-style NetCDF test files with synthetic data, one file per variable, following the naming convention and grid definitions used by the compliance checker.
 
-Files are written to `Models/{GrIS|AIS}/ISMIP7/SYNTH1/CORE/`.
+Files are written to `models/{GrIS|AIS}/ISMIP7/SYNTH1/CORE/`.
 
 ## Usage
 
