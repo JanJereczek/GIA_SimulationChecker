@@ -1,0 +1,446 @@
+************************************************************************************
+*************     GIA Model Simulations - GIAMIP Compliance Checker    *************
+************************************************************************************
+Commit Number: 68a2114 
+verification criteria: GIAMIP data request
+date: 2026/06/23
+source: https://github.com/ismip/ISM_SimulationChecker 
+ 
+------------------------------------------------------------------------------------
+Verified directory: /home/jan/Documents/projects/isostasy/GRDMIP/GIA_SimulationChecker/models/CUBoulder-SemiAnalytic 
+------------------------------------------------------------------------------------
+1 experiments checked.
+12 files checked.
+ 
+124 error(s) detected.
+  - Mandatory variables: 2 error(s)
+  - Naming Tests       : 0 error(s)
+  - Numerical Tests    : 4 error(s)
+  - Spatial Tests      : 0 error(s)
+  - Time Tests         : 0 error(s)
+  - Attribute Tests    : 118 error(s)
+ 
+0 warning(s) detected.
+ 
+ 
+====================================================================================
+================                DETAILED RESULTS                    ================
+====================================================================================
+Hint: Use Ctrl+F to look for specific problems. 
+ 
+
+ **********************************************************
+ ** Experiment: Exp05 
+ **********************************************************
+
+ ERROR: In experiment Exp05, these mandatory variable(s) are missing: ['ocean_area_grdice', 'maf']
+ 
+Experiment: Exp05 - File: Clm_Exp05_CUBoulder_SemiAnalytic.nc
+ 
+NAMING Tests 
+ - Filename convention: OK
+** Tested Variable: Clm
+ 
+NUMERICAL Tests 
+ - Units: absent (dimensionless '1' implied): OK
+ - No missing values: OK
+ATTRIBUTE Tests 
+ - ERROR (attributes): global attribute 'group' is missing.
+ - ERROR (attributes): global attribute 'model' is missing.
+ - ERROR (attributes): global attribute 'contact_name' is missing.
+ - ERROR (attributes): global attribute 'contact_email' is missing.
+ - ERROR (attributes): global attribute 'reference_frame' is missing.
+ - Coordinate attributes: OK
+ - ERROR (attributes): variable 'Clm' missing 'long_name'.
+ - ERROR (attributes): variable 'Clm' dtype is float64, expected float32.
+
+----------------------------------------------------------
+Exp05 - Clm - File: Clm_Exp05_CUBoulder_SemiAnalytic.nc
+7 error(s). Please review before sharing.
+No warnings.
+----------------------------------------------------------
+ 
+Experiment: Exp05 - File: Slm_Exp05_CUBoulder_SemiAnalytic.nc
+ 
+NAMING Tests 
+ - Filename convention: OK
+** Tested Variable: Slm
+ 
+NUMERICAL Tests 
+ - Units: absent (dimensionless '1' implied): OK
+ - No missing values: OK
+ATTRIBUTE Tests 
+ - ERROR (attributes): global attribute 'group' is missing.
+ - ERROR (attributes): global attribute 'model' is missing.
+ - ERROR (attributes): global attribute 'contact_name' is missing.
+ - ERROR (attributes): global attribute 'contact_email' is missing.
+ - ERROR (attributes): global attribute 'reference_frame' is missing.
+ - Coordinate attributes: OK
+ - ERROR (attributes): variable 'Slm' missing 'long_name'.
+ - ERROR (attributes): variable 'Slm' dtype is float64, expected float32.
+
+----------------------------------------------------------
+Exp05 - Slm - File: Slm_Exp05_CUBoulder_SemiAnalytic.nc
+7 error(s). Please review before sharing.
+No warnings.
+----------------------------------------------------------
+ 
+Experiment: Exp05 - File: delta_bed_Exp05_CUBoulder_SemiAnalytic.nc
+ 
+NAMING Tests 
+ - Filename convention: OK
+** Tested Variable: delta_bed
+ 
+NUMERICAL Tests 
+ - Units 'm': OK
+ - No missing values: OK
+SPATIAL Tests 
+ - Latitude size (257 nodes): OK
+ - Longitude size (513 nodes): OK
+ - Latitude south edge (-89.46490769578145° > -90°): OK
+ - Latitude north edge (89.46490769578145° < 90°): OK
+ - Longitude west edge (0.0°): OK
+ - Longitude east edge (359.29824561403507° < 360°): OK
+ - Latitude increases south-to-north: OK
+ - Longitude increases west-to-east: OK
+TIME Tests 
+ - Time is monotonically increasing: OK
+ - WARNING: skipping forcing time comparison (time axis could not be decoded to calendar dates).
+ATTRIBUTE Tests 
+ - ERROR (attributes): global attribute 'group' is missing.
+ - ERROR (attributes): global attribute 'model' is missing.
+ - ERROR (attributes): global attribute 'contact_name' is missing.
+ - ERROR (attributes): global attribute 'contact_email' is missing.
+ - ERROR (attributes): global attribute 'reference_frame' is missing.
+ - ERROR (attributes): time coordinate missing 'calendar'.
+ - ERROR (attributes): time units 'year' must start with 'days since'.
+ - ERROR (attributes): coordinate 'lat' missing 'units'.
+ - ERROR (attributes): coordinate 'lon' missing 'units'.
+ - ERROR (attributes): variable 'delta_bed' missing 'long_name'.
+ - ERROR (attributes): variable 'delta_bed' dtype is float64, expected float32.
+
+----------------------------------------------------------
+Exp05 - delta_bed - File: delta_bed_Exp05_CUBoulder_SemiAnalytic.nc
+11 error(s). Please review before sharing.
+No warnings.
+----------------------------------------------------------
+ 
+Experiment: Exp05 - File: delta_bed_east_Exp05_CUBoulder_SemiAnalytic.nc
+ 
+NAMING Tests 
+ - Filename convention: OK
+** Tested Variable: delta_bed_east
+ 
+NUMERICAL Tests 
+ - Units 'm': OK
+ - No missing values: OK
+SPATIAL Tests 
+ - Latitude size (257 nodes): OK
+ - Longitude size (513 nodes): OK
+ - Latitude south edge (-89.46490769578145° > -90°): OK
+ - Latitude north edge (89.46490769578145° < 90°): OK
+ - Longitude west edge (0.0°): OK
+ - Longitude east edge (359.29824561403507° < 360°): OK
+ - Latitude increases south-to-north: OK
+ - Longitude increases west-to-east: OK
+TIME Tests 
+ - Time is monotonically increasing: OK
+ - WARNING: skipping forcing time comparison (time axis could not be decoded to calendar dates).
+ATTRIBUTE Tests 
+ - ERROR (attributes): global attribute 'group' is missing.
+ - ERROR (attributes): global attribute 'model' is missing.
+ - ERROR (attributes): global attribute 'contact_name' is missing.
+ - ERROR (attributes): global attribute 'contact_email' is missing.
+ - ERROR (attributes): global attribute 'reference_frame' is missing.
+ - ERROR (attributes): time coordinate missing 'calendar'.
+ - ERROR (attributes): time units 'year' must start with 'days since'.
+ - ERROR (attributes): coordinate 'lat' missing 'units'.
+ - ERROR (attributes): coordinate 'lon' missing 'units'.
+ - ERROR (attributes): variable 'delta_bed_east' missing 'long_name'.
+ - ERROR (attributes): variable 'delta_bed_east' dtype is float64, expected float32.
+
+----------------------------------------------------------
+Exp05 - delta_bed_east - File: delta_bed_east_Exp05_CUBoulder_SemiAnalytic.nc
+11 error(s). Please review before sharing.
+No warnings.
+----------------------------------------------------------
+ 
+Experiment: Exp05 - File: delta_bed_north_Exp05_CUBoulder_SemiAnalytic.nc
+ 
+NAMING Tests 
+ - Filename convention: OK
+** Tested Variable: delta_bed_north
+ 
+NUMERICAL Tests 
+ - Units 'm': OK
+ - No missing values: OK
+SPATIAL Tests 
+ - Latitude size (257 nodes): OK
+ - Longitude size (513 nodes): OK
+ - Latitude south edge (-89.46490769578145° > -90°): OK
+ - Latitude north edge (89.46490769578145° < 90°): OK
+ - Longitude west edge (0.0°): OK
+ - Longitude east edge (359.29824561403507° < 360°): OK
+ - Latitude increases south-to-north: OK
+ - Longitude increases west-to-east: OK
+TIME Tests 
+ - Time is monotonically increasing: OK
+ - WARNING: skipping forcing time comparison (time axis could not be decoded to calendar dates).
+ATTRIBUTE Tests 
+ - ERROR (attributes): global attribute 'group' is missing.
+ - ERROR (attributes): global attribute 'model' is missing.
+ - ERROR (attributes): global attribute 'contact_name' is missing.
+ - ERROR (attributes): global attribute 'contact_email' is missing.
+ - ERROR (attributes): global attribute 'reference_frame' is missing.
+ - ERROR (attributes): time coordinate missing 'calendar'.
+ - ERROR (attributes): time units 'year' must start with 'days since'.
+ - ERROR (attributes): coordinate 'lat' missing 'units'.
+ - ERROR (attributes): coordinate 'lon' missing 'units'.
+ - ERROR (attributes): variable 'delta_bed_north' missing 'long_name'.
+ - ERROR (attributes): variable 'delta_bed_north' dtype is float64, expected float32.
+
+----------------------------------------------------------
+Exp05 - delta_bed_north - File: delta_bed_north_Exp05_CUBoulder_SemiAnalytic.nc
+11 error(s). Please review before sharing.
+No warnings.
+----------------------------------------------------------
+ 
+Experiment: Exp05 - File: delta_g_Exp05_CUBoulder_SemiAnalytic.nc
+ 
+NAMING Tests 
+ - Filename convention: OK
+** Tested Variable: delta_g
+ 
+NUMERICAL Tests 
+ - Units 'm': OK
+ - No missing values: OK
+SPATIAL Tests 
+ - Latitude size (257 nodes): OK
+ - Longitude size (513 nodes): OK
+ - Latitude south edge (-89.46490769578145° > -90°): OK
+ - Latitude north edge (89.46490769578145° < 90°): OK
+ - Longitude west edge (0.0°): OK
+ - Longitude east edge (359.29824561403507° < 360°): OK
+ - Latitude increases south-to-north: OK
+ - Longitude increases west-to-east: OK
+TIME Tests 
+ - Time is monotonically increasing: OK
+ - WARNING: skipping forcing time comparison (time axis could not be decoded to calendar dates).
+ATTRIBUTE Tests 
+ - ERROR (attributes): global attribute 'group' is missing.
+ - ERROR (attributes): global attribute 'model' is missing.
+ - ERROR (attributes): global attribute 'contact_name' is missing.
+ - ERROR (attributes): global attribute 'contact_email' is missing.
+ - ERROR (attributes): global attribute 'reference_frame' is missing.
+ - ERROR (attributes): time coordinate missing 'calendar'.
+ - ERROR (attributes): time units 'year' must start with 'days since'.
+ - ERROR (attributes): coordinate 'lat' missing 'units'.
+ - ERROR (attributes): coordinate 'lon' missing 'units'.
+ - ERROR (attributes): variable 'delta_g' missing 'long_name'.
+ - ERROR (attributes): variable 'delta_g' dtype is float64, expected float32.
+
+----------------------------------------------------------
+Exp05 - delta_g - File: delta_g_Exp05_CUBoulder_SemiAnalytic.nc
+11 error(s). Please review before sharing.
+No warnings.
+----------------------------------------------------------
+ 
+Experiment: Exp05 - File: grd_ice_mass_Exp05_CUBoulder_SemiAnalytic.nc
+ 
+NAMING Tests 
+ - Filename convention: OK
+** Tested Variable: grd_ice_mass
+ 
+NUMERICAL Tests 
+ - ERROR: variable 'grd_ice_mass' has no 'units' attribute.
+ - No missing values: OK
+TIME Tests 
+ - Time is monotonically increasing: OK
+ - WARNING: skipping forcing time comparison (time axis could not be decoded to calendar dates).
+ATTRIBUTE Tests 
+ - ERROR (attributes): global attribute 'group' is missing.
+ - ERROR (attributes): global attribute 'model' is missing.
+ - ERROR (attributes): global attribute 'contact_name' is missing.
+ - ERROR (attributes): global attribute 'contact_email' is missing.
+ - ERROR (attributes): global attribute 'reference_frame' is missing.
+ - ERROR (attributes): time coordinate missing 'units'.
+ - ERROR (attributes): time coordinate missing 'calendar'.
+ - ERROR (attributes): variable 'grd_ice_mass' missing 'long_name'.
+ - ERROR (attributes): variable 'grd_ice_mass' dtype is float64, expected float32.
+
+----------------------------------------------------------
+Exp05 - grd_ice_mass - File: grd_ice_mass_Exp05_CUBoulder_SemiAnalytic.nc
+10 error(s). Please review before sharing.
+No warnings.
+----------------------------------------------------------
+ 
+Experiment: Exp05 - File: land_ice_area_fraction_Exp05_CUBoulder_SemiAnalytic.nc
+ 
+NAMING Tests 
+ - Filename convention: OK
+** Tested Variable: land_ice_area_fraction
+ 
+NUMERICAL Tests 
+ - Units: absent (dimensionless '1' implied): OK
+ - No missing values: OK
+ - Mask range [0, 1]: OK
+SPATIAL Tests 
+ - Latitude size (257 nodes): OK
+ - Longitude size (513 nodes): OK
+ - Latitude south edge (-89.46490769578145° > -90°): OK
+ - Latitude north edge (89.46490769578145° < 90°): OK
+ - Longitude west edge (0.0°): OK
+ - Longitude east edge (359.29824561403507° < 360°): OK
+ - Latitude increases south-to-north: OK
+ - Longitude increases west-to-east: OK
+TIME Tests 
+ - Time is monotonically increasing: OK
+ - WARNING: skipping forcing time comparison (time axis could not be decoded to calendar dates).
+ATTRIBUTE Tests 
+ - ERROR (attributes): global attribute 'group' is missing.
+ - ERROR (attributes): global attribute 'model' is missing.
+ - ERROR (attributes): global attribute 'contact_name' is missing.
+ - ERROR (attributes): global attribute 'contact_email' is missing.
+ - ERROR (attributes): global attribute 'reference_frame' is missing.
+ - ERROR (attributes): time coordinate missing 'units'.
+ - ERROR (attributes): time coordinate missing 'calendar'.
+ - ERROR (attributes): coordinate 'lat' missing 'units'.
+ - ERROR (attributes): coordinate 'lon' missing 'units'.
+ - ERROR (attributes): variable 'land_ice_area_fraction' missing 'long_name'.
+ - ERROR (attributes): variable 'land_ice_area_fraction' missing 'standard_name'.
+ - ERROR (attributes): variable 'land_ice_area_fraction' dtype is float64, expected float32.
+
+----------------------------------------------------------
+Exp05 - land_ice_area_fraction - File: land_ice_area_fraction_Exp05_CUBoulder_SemiAnalytic.nc
+12 error(s). Please review before sharing.
+No warnings.
+----------------------------------------------------------
+ 
+Experiment: Exp05 - File: mean_delta_g_Exp05_CUBoulder_SemiAnalytic.nc
+ 
+NAMING Tests 
+ - Filename convention: OK
+** Tested Variable: mean_delta_g
+ 
+NUMERICAL Tests 
+ - ERROR: variable 'mean_delta_g' has no 'units' attribute.
+ - No missing values: OK
+TIME Tests 
+ - Time is monotonically increasing: OK
+ - WARNING: skipping forcing time comparison (time axis could not be decoded to calendar dates).
+ATTRIBUTE Tests 
+ - ERROR (attributes): global attribute 'group' is missing.
+ - ERROR (attributes): global attribute 'model' is missing.
+ - ERROR (attributes): global attribute 'contact_name' is missing.
+ - ERROR (attributes): global attribute 'contact_email' is missing.
+ - ERROR (attributes): global attribute 'reference_frame' is missing.
+ - ERROR (attributes): time coordinate missing 'units'.
+ - ERROR (attributes): time coordinate missing 'calendar'.
+ - ERROR (attributes): variable 'mean_delta_g' missing 'long_name'.
+ - ERROR (attributes): variable 'mean_delta_g' dtype is float64, expected float32.
+
+----------------------------------------------------------
+Exp05 - mean_delta_g - File: mean_delta_g_Exp05_CUBoulder_SemiAnalytic.nc
+10 error(s). Please review before sharing.
+No warnings.
+----------------------------------------------------------
+ 
+Experiment: Exp05 - File: ocean_area_Exp05_CUBoulder_SemiAnalytic.nc
+ 
+NAMING Tests 
+ - Filename convention: OK
+** Tested Variable: ocean_area
+ 
+NUMERICAL Tests 
+ - ERROR: variable 'ocean_area' has no 'units' attribute.
+ - No missing values: OK
+TIME Tests 
+ - Time is monotonically increasing: OK
+ - WARNING: skipping forcing time comparison (time axis could not be decoded to calendar dates).
+ATTRIBUTE Tests 
+ - ERROR (attributes): global attribute 'group' is missing.
+ - ERROR (attributes): global attribute 'model' is missing.
+ - ERROR (attributes): global attribute 'contact_name' is missing.
+ - ERROR (attributes): global attribute 'contact_email' is missing.
+ - ERROR (attributes): global attribute 'reference_frame' is missing.
+ - ERROR (attributes): time coordinate missing 'units'.
+ - ERROR (attributes): time coordinate missing 'calendar'.
+ - ERROR (attributes): variable 'ocean_area' missing 'long_name'.
+ - ERROR (attributes): variable 'ocean_area' dtype is float64, expected float32.
+
+----------------------------------------------------------
+Exp05 - ocean_area - File: ocean_area_Exp05_CUBoulder_SemiAnalytic.nc
+10 error(s). Please review before sharing.
+No warnings.
+----------------------------------------------------------
+ 
+Experiment: Exp05 - File: ocean_area_fraction_Exp05_CUBoulder_SemiAnalytic.nc
+ 
+NAMING Tests 
+ - Filename convention: OK
+** Tested Variable: ocean_area_fraction
+ 
+NUMERICAL Tests 
+ - Units: absent (dimensionless '1' implied): OK
+ - No missing values: OK
+ - Mask range [0, 1]: OK
+SPATIAL Tests 
+ - Latitude size (257 nodes): OK
+ - Longitude size (513 nodes): OK
+ - Latitude south edge (-89.46490769578145° > -90°): OK
+ - Latitude north edge (89.46490769578145° < 90°): OK
+ - Longitude west edge (0.0°): OK
+ - Longitude east edge (359.29824561403507° < 360°): OK
+ - Latitude increases south-to-north: OK
+ - Longitude increases west-to-east: OK
+TIME Tests 
+ - Time is monotonically increasing: OK
+ - WARNING: skipping forcing time comparison (time axis could not be decoded to calendar dates).
+ATTRIBUTE Tests 
+ - ERROR (attributes): global attribute 'group' is missing.
+ - ERROR (attributes): global attribute 'model' is missing.
+ - ERROR (attributes): global attribute 'contact_name' is missing.
+ - ERROR (attributes): global attribute 'contact_email' is missing.
+ - ERROR (attributes): global attribute 'reference_frame' is missing.
+ - ERROR (attributes): time coordinate missing 'units'.
+ - ERROR (attributes): time coordinate missing 'calendar'.
+ - ERROR (attributes): coordinate 'lat' missing 'units'.
+ - ERROR (attributes): coordinate 'lon' missing 'units'.
+ - ERROR (attributes): variable 'ocean_area_fraction' missing 'long_name'.
+ - ERROR (attributes): variable 'ocean_area_fraction' missing 'standard_name'.
+ - ERROR (attributes): variable 'ocean_area_fraction' dtype is float64, expected float32.
+
+----------------------------------------------------------
+Exp05 - ocean_area_fraction - File: ocean_area_fraction_Exp05_CUBoulder_SemiAnalytic.nc
+12 error(s). Please review before sharing.
+No warnings.
+----------------------------------------------------------
+ 
+Experiment: Exp05 - File: total_ice_mass_Exp05_CUBoulder_SemiAnalytic.nc
+ 
+NAMING Tests 
+ - Filename convention: OK
+** Tested Variable: total_ice_mass
+ 
+NUMERICAL Tests 
+ - ERROR: variable 'total_ice_mass' has no 'units' attribute.
+ - No missing values: OK
+TIME Tests 
+ - Time is monotonically increasing: OK
+ - WARNING: skipping forcing time comparison (time axis could not be decoded to calendar dates).
+ATTRIBUTE Tests 
+ - ERROR (attributes): global attribute 'group' is missing.
+ - ERROR (attributes): global attribute 'model' is missing.
+ - ERROR (attributes): global attribute 'contact_name' is missing.
+ - ERROR (attributes): global attribute 'contact_email' is missing.
+ - ERROR (attributes): global attribute 'reference_frame' is missing.
+ - ERROR (attributes): time coordinate missing 'units'.
+ - ERROR (attributes): time coordinate missing 'calendar'.
+ - ERROR (attributes): variable 'total_ice_mass' missing 'long_name'.
+ - ERROR (attributes): variable 'total_ice_mass' dtype is float64, expected float32.
+
+----------------------------------------------------------
+Exp05 - total_ice_mass - File: total_ice_mass_Exp05_CUBoulder_SemiAnalytic.nc
+10 error(s). Please review before sharing.
+No warnings.
+----------------------------------------------------------
