@@ -61,6 +61,7 @@ def baseline_dir(tmp_path_factory):
     )
     summary = checker.run_checker(
         source_path=str(root),
+        forcing_path=None,
         workdir=str(REPO_ROOT),
         commit_num="tests",
     )
@@ -82,6 +83,7 @@ def case_dir(tmp_path, baseline_dir):
 def run_checker(case_dir: Path) -> dict:
     return checker.run_checker(
         source_path=str(case_dir),
+        forcing_path=None,
         workdir=str(REPO_ROOT),
         commit_num="tests",
     )
@@ -207,8 +209,8 @@ def test_nan_values_detected(case_dir):
 
 
 def test_wrong_units(case_dir):
-    path = file_for(case_dir, "bed")
-    set_var_attr(path, "bed", "units", "km")
+    path = file_for(case_dir, "delta_bed")
+    set_var_attr(path, "delta_bed", "units", "km")
 
     summary = run_checker(case_dir)
 
@@ -234,11 +236,11 @@ def test_mask_out_of_range(case_dir):
 
 def test_wrong_grid_size(case_dir, tmp_path):
     """Replace a 3D file with one that has a 10×20 grid instead of 257×513."""
-    path = file_for(case_dir, "bed")
+    path = file_for(case_dir, "delta_bed")
     path.unlink()
 
     # Generate a small-grid replacement
-    small_lat = np.linspace(-90.0, 90.0, 10, dtype=np.float32)
+    small_lat = np.linspace(-81.0, 81.0, 10, dtype=np.float32)
     small_lon = np.linspace(0.0, 360.0, 20, endpoint=False, dtype=np.float32)
     time_days = np.array(
         [generator._year_to_days(START_YEAR), generator._year_to_days(END_YEAR)],
@@ -246,9 +248,9 @@ def test_wrong_grid_size(case_dir, tmp_path):
     )
     data = np.random.uniform(0.0, 100.0, (2, 10, 20)).astype(np.float32)
 
-    ds = _make_spatial_dataset("bed", data, time_days, small_lat, small_lon)
+    ds = _make_spatial_dataset("delta_bed", data, time_days, small_lat, small_lon)
     ds.to_netcdf(path, unlimited_dims=("time",),
-                 encoding={"bed": {"dtype": "f4", "_FillValue": None},
+                 encoding={"delta_bed": {"dtype": "f4", "_FillValue": None},
                             "time": {"dtype": "f4", "_FillValue": None}})
 
     summary = run_checker(case_dir)
@@ -278,23 +280,12 @@ def test_wrong_lat_range(case_dir):
     summary = run_checker(case_dir)
 
     assert summary["total_spatial_errors"] >= 1
-    assert "south edge" in summary["log_text"]
+    assert "north edge" in summary["log_text"]
 
 
 # ---------------------------------------------------------------------------
 # Tests: time errors
 # ---------------------------------------------------------------------------
-
-def test_wrong_end_year(case_dir):
-    """Set the time axis to years [1, 3001], which is outside Exp01's end range."""
-    path = file_for(case_dir, "mean_delta_g")
-    set_time_years(path, [1, 3001])
-
-    summary = run_checker(case_dir)
-
-    assert summary["total_time_errors"] >= 1
-    assert "end year" in summary["log_text"]
-
 
 def test_non_monotonic_time(case_dir):
     """Reverse the time axis so it is decreasing."""
@@ -305,17 +296,6 @@ def test_non_monotonic_time(case_dir):
 
     assert summary["total_time_errors"] >= 1
     assert "monotonically" in summary["log_text"]
-
-
-def test_wrong_time_step_for_1000yr_variable(case_dir):
-    """Use a 10-year step for a variable that requires ~1000-year steps."""
-    path = file_for(case_dir, "bed")
-    set_time_years(path, [START_YEAR, START_YEAR + 10])
-
-    summary = run_checker(case_dir)
-
-    assert summary["total_time_errors"] >= 1
-    assert "time step" in summary["log_text"]
 
 
 # ---------------------------------------------------------------------------
@@ -351,8 +331,8 @@ def test_missing_long_name(case_dir):
 
 
 def test_wrong_dtype(case_dir, tmp_path):
-    """Replace the bed file with one where the variable is float64."""
-    path = file_for(case_dir, "bed")
+    """Replace the delta_bed file with one where the variable is float64."""
+    path = file_for(case_dir, "delta_bed")
     path.unlink()
 
     lat = np.linspace(-90.0, 90.0, 257, dtype=np.float32)
@@ -363,9 +343,9 @@ def test_wrong_dtype(case_dir, tmp_path):
     )
     data = np.random.uniform(-100.0, 100.0, (2, 257, 513)).astype(np.float64)
 
-    ds = _make_spatial_dataset("bed", data, time_days, lat, lon)
+    ds = _make_spatial_dataset("delta_bed", data, time_days, lat, lon)
     ds.to_netcdf(path, unlimited_dims=("time",),
-                 encoding={"bed": {"dtype": "f8", "_FillValue": None},
+                 encoding={"delta_bed": {"dtype": "f8", "_FillValue": None},
                             "time": {"dtype": "f4", "_FillValue": None}})
 
     summary = run_checker(case_dir)

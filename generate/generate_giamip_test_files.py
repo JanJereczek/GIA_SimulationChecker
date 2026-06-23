@@ -30,7 +30,9 @@ CALENDAR = "proleptic_gregorian"
 
 
 def _make_grid():
-    lat = np.linspace(-90.0, 90.0, NLAT, dtype=np.float32)
+    # Gaussian grids never include the exact poles; shift by half a cell.
+    step = 180.0 / NLAT
+    lat = np.linspace(-90.0 + step / 2, 90.0 - step / 2, NLAT, dtype=np.float32)
     lon = np.linspace(0.0, 360.0, NLON, endpoint=False, dtype=np.float32)
     return lat, lon
 
@@ -202,7 +204,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--output-dir",
-        default="./Models/GIAMIP/Exp01/CORE",
+        default="./models/GIAMIP/Exp01/CORE",
         help="Directory for output files.",
     )
     parser.add_argument(

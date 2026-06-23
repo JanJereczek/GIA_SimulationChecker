@@ -18,10 +18,9 @@
 #    - Longitude spans [0, 360) and increases west-to-east.
 #
 # 4. Time (_check_time)  [t and lat/lon/t variables only]
-#    - Time dimension is present, is an unlimited (record) dimension, and values are
-#      monotonically increasing.
-#    - For 1000-year output variables the time step is within [900, 1100] years.
-#    - Experiment start and end years match the ranges in experiments_giamip.csv.
+#    - Time dimension is present and values are monotonically increasing.
+#    - If a forcing file is provided, the time axis matches the forcing time axis
+#      (year-by-year comparison, calendar-agnostic).
 #
 # 5. Attributes (_check_attributes)
 #    - Global attributes present: group, model, contact_name, contact_email, reference_frame.
@@ -32,20 +31,26 @@
 #    - standard_name matches data request (if one is specified).
 #    - Main variable must be single-precision float (float32 / f4).
 
-import datetime
+import sys
 import os
+
+if __name__ == "__main__":
+    _CONDA_PYTHON = os.path.expanduser("~/.miniconda3/envs/isschecker/bin/python")
+    if os.path.realpath(sys.executable) != os.path.realpath(_CONDA_PYTHON):
+        os.execv(_CONDA_PYTHON, [_CONDA_PYTHON] + sys.argv)
+
+import datetime
 import subprocess
 import argparse
 
 import numpy as np
-import pandas as pd
 import xarray as xr
 import netCDF4
 from tqdm import tqdm
 
 
-DEFAULT_SOURCE_PATH = "./Models/GIAMIP/Exp01/CORE"
-EXPERIMENTS_GIAMIP_CSV = "experiments_giamip.csv"
+DEFAULT_SOURCE_PATH = "./models/GIAMIP/Exp01/CORE"
+GIAMIP_EXPERIMENTS = [f"Exp{i:02d}" for i in range(1, 13)]
 
 # GIAMIP file naming convention:
 # {var}_{experiment_id}_{group_name}_{model_name}.nc
@@ -61,49 +66,40 @@ GIAMIP_LAT_EXTENT = (-90.0, 90.0)
 GIAMIP_LON_EXTENT = (0.0, 360.0)
 GIAMIP_COORD_TOL = 0.1  # degrees tolerance for grid extent checks
 
-TIME_STEP_MIN_YEARS = 900
-TIME_STEP_MAX_YEARS = 1100
-
 MASK_VARIABLES = {"ocean_area_fraction", "land_ice_area_fraction"}
 
 GIAMIP_VARIABLES = [
     # --- Required 3D (time, lat, lon) ---
     {
-        "variable": "bed", "dim": "lat_lon_t", "units": "m",
-        "mandatory": True, "output_interval": "1000yr",
-        "standard_name": "bedrock_altitude",
-        "long_name": "Height of the solid Earth surface beneath ice and ocean water",
+        "variable": "delta_bed", "dim": "lat_lon_t", "units": "m",
+        "mandatory": True, "output_interval": "forcing",
+        "standard_name": None,
+        "long_name": "Change in the bedrock elevation relative to the initial simulation time step",
     },
     {
         "variable": "delta_g", "dim": "lat_lon_t", "units": "m",
-        "mandatory": True, "output_interval": "1000yr",
+        "mandatory": True, "output_interval": "forcing",
         "standard_name": None,
-        "long_name": "Change in geoid height relative to the initial simulation time step",
-    },
-    {
-        "variable": "delta_rsl", "dim": "lat_lon_t", "units": "m",
-        "mandatory": True, "output_interval": "1000yr",
-        "standard_name": "change_in_mean_sea_level_wrt_solid_surface",
-        "long_name": "Relative sea-level change relative to the initial simulation timestep",
+        "long_name": "Change in the geoid height relative to the initial simulation time step",
     },
     {
         "variable": "ocean_area_fraction", "dim": "lat_lon_t", "units": "1",
         "mandatory": True, "output_interval": "forcing",
         "standard_name": "sea_area_fraction",
-        "long_name": "Fraction of grid-cell area covered by ocean",
+        "long_name": "Fraction of horizontal grid-cell area covered by ocean",
     },
     {
         "variable": "land_ice_area_fraction", "dim": "lat_lon_t", "units": "1",
         "mandatory": True, "output_interval": "forcing",
         "standard_name": "land_ice_area_fraction",
-        "long_name": "Fraction of grid-cell area covered by grounded and floating land ice",
+        "long_name": "Fraction of horizontal grid-cell area covered by grounded and floating land ice",
     },
     # --- Required scalars (time only) ---
     {
         "variable": "mean_delta_g", "dim": "t", "units": "m",
-        "mandatory": True, "output_interval": "1000yr",
+        "mandatory": True, "output_interval": "forcing",
         "standard_name": None,
-        "long_name": "Spatial mean of geoid height change over the ocean area",
+        "long_name": "Spatial mean of geoid height change (delta_g) over the ocean area",
     },
     {
         "variable": "grd_ice_mass", "dim": "t", "units": "kg",
@@ -115,7 +111,7 @@ GIAMIP_VARIABLES = [
         "variable": "total_ice_mass", "dim": "t", "units": "kg",
         "mandatory": True, "output_interval": "forcing",
         "standard_name": None,
-        "long_name": "Total ice volume times ice density",
+        "long_name": "Spatial integration, total (grounded and floating) ice volume times ice density",
     },
     {
         "variable": "ocean_area_grdice", "dim": "t", "units": "m2",
@@ -133,33 +129,33 @@ GIAMIP_VARIABLES = [
         "variable": "maf", "dim": "t", "units": "kg",
         "mandatory": True, "output_interval": "forcing",
         "standard_name": "land_ice_mass_not_displacing_sea_water",
-        "long_name": "Land ice mass above flotation",
+        "long_name": "Land ice mass above flotation that would contribute to global mean sea-level change if converted to water and added to the ocean",
     },
     # --- Optional 3D ---
     {
         "variable": "delta_bed_east", "dim": "lat_lon_t", "units": "m",
-        "mandatory": False, "output_interval": "1000yr",
+        "mandatory": False, "output_interval": "forcing",
         "standard_name": None,
-        "long_name": "Eastward horizontal solid Earth displacement",
+        "long_name": "Eastward horizontal solid Earth displacement relative to the initial simulation timestep",
     },
     {
         "variable": "delta_bed_north", "dim": "lat_lon_t", "units": "m",
-        "mandatory": False, "output_interval": "1000yr",
+        "mandatory": False, "output_interval": "forcing",
         "standard_name": None,
-        "long_name": "Northward horizontal solid Earth displacement",
+        "long_name": "Northward horizontal solid Earth displacement relative to the initial simulation timestep",
     },
     # --- Optional spherical harmonics (degree, order) ---
     {
         "variable": "Clm", "dim": "degree_order", "units": "1",
         "mandatory": False, "output_interval": "once",
         "standard_name": None,
-        "long_name": "Cosine spherical harmonic coefficients of geoid height change",
+        "long_name": "Cosine spherical harmonic coefficients (C_lm) of geoid height change (delta_g) between the first and final simulation timesteps",
     },
     {
         "variable": "Slm", "dim": "degree_order", "units": "1",
         "mandatory": False, "output_interval": "once",
         "standard_name": None,
-        "long_name": "Sine spherical harmonic coefficients of geoid height change",
+        "long_name": "Sine spherical harmonic coefficients (S_lm) of geoid height change (delta_g) between the first and final simulation timesteps",
     },
 ]
 
@@ -213,22 +209,29 @@ def _check_environment() -> None:
 def main() -> None:
     _check_environment()
     args = _parse_args()
-    run_checker(source_path=args.source_path, workdir=os.getcwd())
+    run_checker(
+        source_path=args.source_path,
+        workdir=os.getcwd(),
+        forcing_path=args.forcing_path,
+    )
 
 
 def run_checker(
     source_path: str,
+    forcing_path: str | None,
     workdir: str | None = None,
     commit_num: str | None = None,
 ) -> dict:
     workdir = os.path.abspath(workdir or os.getcwd())
     commit_num = _get_commit_number() if commit_num is None else commit_num
-    experiments = _load_experiments_csv(os.path.join(workdir, EXPERIMENTS_GIAMIP_CSV))
+    experiments = GIAMIP_EXPERIMENTS
+    forcing_times = _load_forcing_times(forcing_path) if forcing_path else None
 
     summary = _run_compliance_checker(
         source_path=source_path,
         commit_num=commit_num,
         experiments=experiments,
+        forcing_times=forcing_times,
     )
 
     log_path = os.path.join(source_path, "compliance_checker_log.txt")
@@ -265,27 +268,33 @@ def _parse_args() -> argparse.Namespace:
         default=DEFAULT_SOURCE_PATH,
         help="Directory containing the GIAMIP NetCDF files.",
     )
+    parser.add_argument(
+        "--forcing-path",
+        required=True,
+        help="Path to the forcing NetCDF file used to validate output time axes.",
+    )
     return parser.parse_args()
 
 
-def _load_experiments_csv(file_path: str) -> list:
-    frame = pd.read_csv(file_path, delimiter=";")
-    experiments = []
-    for _, row in frame.iterrows():
-        experiments.append({
-            "experiment": row["experiment"],
-            "start_year_inf": int(row["start_year_inf"]),
-            "start_year_sup": int(row["start_year_sup"]),
-            "end_year_inf": int(row["end_year_inf"]),
-            "end_year_sup": int(row["end_year_sup"]),
-        })
-    return experiments
+def _load_forcing_times(forcing_path: str):
+    """Return an array of decoded cftime objects from the forcing file's time axis.
+
+    Returns None if the file cannot be opened or the time axis cannot be decoded.
+    """
+    try:
+        ds = xr.open_dataset(forcing_path, decode_times=False)
+        decoded = xr.decode_cf(ds, decode_times=xr.coders.CFDatetimeCoder(use_cftime=True))
+        return decoded["time"].values
+    except Exception as e:
+        print(f"WARNING: could not load forcing file '{forcing_path}': {e}")
+        return None
 
 
 def _run_compliance_checker(
     source_path: str,
     commit_num: str,
     experiments: list,
+    forcing_times=None,
 ) -> dict:
     if not os.path.isdir(source_path):
         print(f"ERROR: Directory not found: '{source_path}'.")
@@ -310,6 +319,7 @@ def _run_compliance_checker(
                 source_path=source_path,
                 experiment_groups=experiment_groups,
                 experiments=experiments,
+                forcing_times=forcing_times,
             )
 
         _insert_synthesis(
@@ -363,6 +373,7 @@ def _process_experiments(
     source_path: str,
     experiment_groups: dict,
     experiments: list,
+    forcing_times=None,
 ) -> dict:
     total_naming_errors = 0
     total_num_errors = 0
@@ -383,6 +394,7 @@ def _process_experiments(
             exp_files=exp_files,
             experiments=experiments,
             report_naming_issues=report_naming_issues,
+            forcing_times=forcing_times,
         )
         file_counter += exp_summary["file_counter"]
         total_naming_errors += exp_summary["exp_naming_errors"]
@@ -421,6 +433,7 @@ def _process_single_experiment(
     exp_files: list,
     experiments: list,
     report_naming_issues: list,
+    forcing_times=None,
 ) -> dict:
     exp_naming_errors = 0
     exp_num_errors = 0
@@ -429,18 +442,16 @@ def _process_single_experiment(
     exp_attr_errors = 0
     exp_file_errors = 0
 
-    known_exp_names = [e["experiment"] for e in experiments]
-
     log_file.write("\n ")
     log_file.write("**********************************************************\n")
     log_file.write(f" ** Experiment: {experiment_name} \n ")
     log_file.write("**********************************************************\n")
     log_file.write("\n ")
 
-    if experiment_name not in known_exp_names:
+    if experiment_name not in experiments:
         log_file.write(
             f"ERROR: The compliance check is ignored for experiment '{experiment_name}'"
-            f" as it is not in {known_exp_names}.\n"
+            f" as it is not in {experiments}.\n"
         )
         exp_naming_errors += 1
         report_naming_issues.append(
@@ -486,6 +497,7 @@ def _process_single_experiment(
             experiment_name=experiment_name,
             experiments=experiments,
             report_naming_issues=report_naming_issues,
+            forcing_times=forcing_times,
         )
         exp_naming_errors += file_summary["var_naming_errors"]
         exp_num_errors += file_summary["var_num_errors"]
@@ -517,6 +529,7 @@ def _process_single_file(
     experiment_name: str,
     experiments: list,
     report_naming_issues: list,
+    forcing_times=None,
 ) -> dict:
     zero = {"var_naming_errors": 0, "var_num_errors": 0,
             "var_spatial_errors": 0, "var_time_errors": 0, "var_attr_errors": 0}
@@ -539,6 +552,7 @@ def _process_single_file(
         experiment_name=experiment_name,
         experiments=experiments,
         report_naming_issues=report_naming_issues,
+        forcing_times=forcing_times,
     )
 
     total = naming_errors + num_errors + spatial_errors + time_errors + attr_errors
@@ -592,10 +606,9 @@ def _check_naming(
         )
         errors += 1
 
-    known_exp_names = [e["experiment"] for e in experiments]
-    if experiment_name not in known_exp_names:
+    if experiment_name not in experiments:
         log_file.write(
-            f" - ERROR: experiment '{experiment_name}' is not in experiments_giamip.csv.\n"
+            f" - ERROR: experiment '{experiment_name}' is not a known GIAMIP experiment.\n"
         )
         errors += 1
 
@@ -620,8 +633,11 @@ def _check_numerical(
     # Units check
     actual_units = ds[var_name].attrs.get("units", None)
     if actual_units is None:
-        log_file.write(f" - ERROR: variable '{var_name}' has no 'units' attribute.\n")
-        errors += 1
+        if expected_units == "1":
+            log_file.write(f" - Units: absent (dimensionless '1' implied): OK\n")
+        else:
+            log_file.write(f" - ERROR: variable '{var_name}' has no 'units' attribute.\n")
+            errors += 1
     elif actual_units == expected_units:
         log_file.write(f" - Units '{actual_units}': OK\n")
     else:
@@ -691,19 +707,19 @@ def _check_spatial(log_file, ds: xr.Dataset) -> int:
     lat_min, lat_max = float(lat_vals.min()), float(lat_vals.max())
     lon_min, lon_max = float(lon_vals.min()), float(lon_vals.max())
 
-    if abs(lat_min - GIAMIP_LAT_EXTENT[0]) <= GIAMIP_COORD_TOL:
-        log_file.write(f" - Latitude south edge ({lat_min}°): OK\n")
+    if lat_min > GIAMIP_LAT_EXTENT[0]:
+        log_file.write(f" - Latitude south edge ({lat_min}° > -90°): OK\n")
     else:
         log_file.write(
-            f" - ERROR: latitude south edge {lat_min}°, expected {GIAMIP_LAT_EXTENT[0]}°.\n"
+            f" - ERROR: latitude south edge {lat_min}°, expected > {GIAMIP_LAT_EXTENT[0]}°.\n"
         )
         errors += 1
 
-    if abs(lat_max - GIAMIP_LAT_EXTENT[1]) <= GIAMIP_COORD_TOL:
-        log_file.write(f" - Latitude north edge ({lat_max}°): OK\n")
+    if lat_max < GIAMIP_LAT_EXTENT[1]:
+        log_file.write(f" - Latitude north edge ({lat_max}° < 90°): OK\n")
     else:
         log_file.write(
-            f" - ERROR: latitude north edge {lat_max}°, expected {GIAMIP_LAT_EXTENT[1]}°.\n"
+            f" - ERROR: latitude north edge {lat_max}°, expected < {GIAMIP_LAT_EXTENT[1]}°.\n"
         )
         errors += 1
 
@@ -741,9 +757,8 @@ def _check_spatial(log_file, ds: xr.Dataset) -> int:
 def _check_time(
     log_file,
     ds: xr.Dataset,
-    experiments: list,
-    experiment_name: str,
     output_interval: str,
+    forcing_times=None,
 ) -> int:
     errors = 0
     log_file.write("TIME Tests \n")
@@ -752,15 +767,6 @@ def _check_time(
     if time_dim is None:
         log_file.write(" - ERROR: time dimension not found.\n")
         return errors + 1
-
-    unlimited_dims = ds.encoding.get("unlimited_dims", set())
-    if time_dim in unlimited_dims:
-        log_file.write(f" - Time is a record (unlimited) dimension: OK\n")
-    else:
-        log_file.write(
-            f" - ERROR: dimension '{time_dim}' is not a record (unlimited) dimension.\n"
-        )
-        errors += 1
 
     try:
         decoded = xr.decode_cf(ds, decode_times=xr.coders.CFDatetimeCoder(use_cftime=True))
@@ -775,57 +781,33 @@ def _check_time(
         return errors + 1
     log_file.write(" - Time is monotonically increasing: OK\n")
 
-    # Time step check for 1000-year variables
-    if output_interval == "1000yr" and len(time_vals) > 1:
-        t0, t1 = time_vals[0], time_vals[1]
-        try:
-            year_step = t1.year - t0.year
-            if TIME_STEP_MIN_YEARS <= year_step <= TIME_STEP_MAX_YEARS:
-                log_file.write(f" - Time step {year_step} years: OK\n")
-            else:
+    # Compare against forcing time axis (year-by-year, calendar-agnostic)
+    if output_interval == "forcing" and forcing_times is not None:
+        if len(time_vals) == 0 or not hasattr(time_vals[0], "year"):
+            log_file.write(
+                " - WARNING: skipping forcing time comparison"
+                " (time axis could not be decoded to calendar dates).\n"
+            )
+        else:
+            forcing_years = np.array([t.year for t in forcing_times])
+            var_years = np.array([t.year for t in time_vals])
+            if len(var_years) != len(forcing_years):
                 log_file.write(
-                    f" - ERROR: time step {year_step} years; expected "
-                    f"[{TIME_STEP_MIN_YEARS}, {TIME_STEP_MAX_YEARS}] years.\n"
+                    f" - ERROR: time has {len(var_years)} step(s),"
+                    f" forcing has {len(forcing_years)} step(s).\n"
                 )
                 errors += 1
-        except Exception as err:
-            log_file.write(f" - WARNING: could not determine time step: {err}\n")
-
-    # Start/end year check against experiments CSV
-    exp = next((e for e in experiments if e["experiment"] == experiment_name), None)
-    if exp is None:
-        return errors
-
-    try:
-        start_year = time_vals[0].year
-        end_year = time_vals[-1].year
-
-        if exp["start_year_inf"] <= start_year <= exp["start_year_sup"]:
-            log_file.write(
-                f" - Start year {start_year} in [{exp['start_year_inf']}, "
-                f"{exp['start_year_sup']}]: OK\n"
-            )
-        else:
-            log_file.write(
-                f" - ERROR: start year {start_year}; expected in "
-                f"[{exp['start_year_inf']}, {exp['start_year_sup']}].\n"
-            )
-            errors += 1
-
-        if exp["end_year_inf"] <= end_year <= exp["end_year_sup"]:
-            log_file.write(
-                f" - End year {end_year} in [{exp['end_year_inf']}, "
-                f"{exp['end_year_sup']}]: OK\n"
-            )
-        else:
-            log_file.write(
-                f" - ERROR: end year {end_year}; expected in "
-                f"[{exp['end_year_inf']}, {exp['end_year_sup']}].\n"
-            )
-            errors += 1
-
-    except Exception as err:
-        log_file.write(f" - WARNING: could not determine start/end year: {err}\n")
+            elif not np.array_equal(var_years, forcing_years):
+                diffs = np.where(var_years != forcing_years)[0]
+                log_file.write(
+                    f" - ERROR: time axis does not match forcing at {len(diffs)} step(s)"
+                    f" (first mismatch: index {diffs[0]},"
+                    f" variable year {var_years[diffs[0]]},"
+                    f" forcing year {forcing_years[diffs[0]]}).\n"
+                )
+                errors += 1
+            else:
+                log_file.write(" - Time axis matches forcing: OK\n")
 
     return errors
 
@@ -952,6 +934,7 @@ def _run_variable_checks(
     experiment_name: str,
     experiments: list,
     report_naming_issues: list,
+    forcing_times=None,
 ) -> tuple[int, int, int, int, int]:
     naming_errors = 0
     num_errors = 0
@@ -983,8 +966,9 @@ def _run_variable_checks(
 
     if has_time:
         time_errors += _check_time(
-            log_file, ds, experiments, experiment_name,
+            log_file, ds,
             var_meta.get("output_interval", "forcing"),
+            forcing_times=forcing_times,
         )
 
     attr_errors += _check_attributes(log_file, ds, var_name, var_meta, is_spatial, has_time)
@@ -1032,7 +1016,7 @@ def _write_log_header(log_file, commit_num: str, source_path: str, today: dateti
     log_file.write(f"Commit Number: {commit_num} \n")
     log_file.write("verification criteria: GIAMIP data request\n")
     log_file.write(f"date: {today.strftime('%Y/%m/%d')}\n")
-    log_file.write("source: https://github.com/ismip/ISM_SimulationChecker \n")
+    log_file.write("source: https://github.com/JanJereczek/GIA_SimulationChecker \n")
     log_file.write(" \n")
     log_file.write(
         "------------------------------------------------------------------------------------\n"
