@@ -5,7 +5,7 @@ Checks GIAMIP NetCDF simulation datasets for compliance with the GIAMIP data req
 1. **Naming** — variable name, experiment ID, group name, and model name; mandatory variables must all be present.
 2. **Numerical** — units match the data request; no NaN values are present; mask variables (`ocean_area_fraction`, `land_ice_area_fraction`) have all values within [0, 1].
 3. **Spatial** *(lat/lon/time variables only)* — global Gaussian grid of 257 × 513 nodes; latitude spans [−90, 90]; longitude spans [0, 360).
-4. **Time** — time axis is monotonically increasing; start and end years fall within the allowed range for the experiment; variables with `1000yr` output interval use approximately 1000-year time steps.
+4. **Time** — time axis is monotonically increasing; start and end years fall within the allowed range for the experiment.
 5. **Attributes** — required global attributes (`group`, `model`, `contact_name`, `contact_email`, `reference_frame`) are present; `reference_frame` must be `CM`; time units start with `days since`; all data variables are float32.
 
 Compliance criteria are defined in `giamip_compliance_checker.py` (variable metadata) and `experiments_giamip.csv` (valid experiment year ranges).
@@ -28,12 +28,12 @@ Dependencies: Python 3.14, `numpy` 2.4, `xarray` 2026.4, `cftime` 1.6, `netCDF4`
 The script must be run from the repository root. It writes `giamip_compliance_checker_log.txt` into the `--source-path` directory.
 
 ```bash
-python giamip_compliance_checker.py --source-path ./Models/GIAMIP/Exp01/CORE
+python giamip_compliance_checker.py --source-path ./models/GIAMIP/Exp01/CORE
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--source-path` | `./Models/GIAMIP/Exp01/CORE` | Directory containing `.nc` files to check |
+| `--source-path` | `./models/GIAMIP/Exp01/CORE` | Directory containing `.nc` files to check |
 
 ---
 
@@ -57,19 +57,18 @@ Full variable metadata (long names, standard names, units, precision, reference 
 
 | Variable | Dimensions | Mandatory | Output interval |
 |----------|-----------|-----------|-----------------|
-| `bed` | lat, lon, time | yes | 1000 yr |
-| `delta_g` | lat, lon, time | yes | 1000 yr |
-| `delta_rsl` | lat, lon, time | yes | 1000 yr |
+| `delta_bed` | lat, lon, time | yes | forcing |
+| `delta_g` | lat, lon, time | yes | forcing |
 | `ocean_area_fraction` | lat, lon, time | yes | forcing |
 | `land_ice_area_fraction` | lat, lon, time | yes | forcing |
-| `mean_delta_g` | time | yes | 1000 yr |
+| `mean_delta_g` | time | yes | forcing |
 | `grd_ice_mass` | time | yes | forcing |
 | `total_ice_mass` | time | yes | forcing |
 | `ocean_area_grdice` | time | yes | forcing |
 | `ocean_area` | time | yes | forcing |
 | `maf` | time | yes | forcing |
-| `delta_bed_east` | lat, lon, time | no | 1000 yr |
-| `delta_bed_north` | lat, lon, time | no | 1000 yr |
+| `delta_bed_east` | lat, lon, time | no | forcing |
+| `delta_bed_north` | lat, lon, time | no | forcing |
 | `Clm` | degree, order | no | snapshot |
 | `Slm` | degree, order | no | snapshot |
 
@@ -94,7 +93,7 @@ python generate/generate_giamip_test_files.py --start-year 1 --end-year 2001 --n
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--output-dir` | `./Models/GIAMIP/Exp01/CORE` | Directory for output files |
+| `--output-dir` | `./models/GIAMIP/Exp01/CORE` | Directory for output files |
 | `--experiment-id` | `Exp01` | Experiment identifier |
 | `--group` | `TESTGROUP` | Group name |
 | `--model` | `TESTMODEL` | Model name |
