@@ -12,7 +12,6 @@ import shutil
 import sys
 from pathlib import Path
 
-import cftime
 import netCDF4
 import numpy as np
 import pytest
@@ -136,13 +135,25 @@ def inject_nan(path: Path, var: str) -> None:
 
 
 def set_time_years(path: Path, years: list[int]) -> None:
-    """Replace the time axis with values corresponding to the given integer years."""
+    """Replace the time axis with the given calendar years (stored directly)."""
     with netCDF4.Dataset(path, "a") as nc:
-        tv = nc.variables["time"]
-        units = tv.units
-        calendar = getattr(tv, "calendar", "proleptic_gregorian")
-        dates = [cftime.DatetimeProlepticGregorian(y, 1, 1) for y in years]
-        tv[:] = cftime.date2num(dates, units, calendar)
+        nc.variables["time"][:] = np.array(years, dtype=np.float32)
+
+
+def write_forcing(path: Path, lat, lon, years) -> Path:
+    """Write a minimal forcing file with a 'year' variable and a lat/lon grid."""
+    import xarray as xr
+
+    ds = xr.Dataset(
+        {"year": ("time", np.asarray(years, dtype=np.int32))},
+        coords={
+            "time": ("time", np.arange(len(years), dtype=np.float32)),
+            "lat": ("lat", np.asarray(lat, dtype=np.float64)),
+            "lon": ("lon", np.asarray(lon, dtype=np.float64)),
+        },
+    )
+    ds.to_netcdf(path)
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +225,7 @@ def test_wrong_units(case_dir):
 
     summary = run_checker(case_dir)
 
-    assert summary["total_num_errors"] >= 1
+    assert summary["total_var_attr_errors"] >= 1
     assert "units" in summary["log_text"]
 
 
@@ -227,7 +238,19 @@ def test_mask_out_of_range(case_dir):
     summary = run_checker(case_dir)
 
     assert summary["total_num_errors"] >= 1
-    assert "outside [0, 1]" in summary["log_text"]
+    assert "outside its plausible range" in summary["log_text"]
+
+
+def test_out_of_bounds_detected(case_dir):
+    """A scalar value outside the variable's plausible range is flagged."""
+    path = file_for(case_dir, "grd_ice_mass")
+    with netCDF4.Dataset(path, "a") as nc:
+        nc.variables["grd_ice_mass"][0] = 1e25  # far above the 1e20 upper bound
+
+    summary = run_checker(case_dir)
+
+    assert summary["total_num_errors"] >= 1
+    assert "outside its plausible range" in summary["log_text"]
 
 
 # ---------------------------------------------------------------------------
@@ -242,13 +265,10 @@ def test_wrong_grid_size(case_dir, tmp_path):
     # Generate a small-grid replacement
     small_lat = np.linspace(-81.0, 81.0, 10, dtype=np.float32)
     small_lon = np.linspace(0.0, 360.0, 20, endpoint=False, dtype=np.float32)
-    time_days = np.array(
-        [generator._year_to_days(START_YEAR), generator._year_to_days(END_YEAR)],
-        dtype=np.float32,
-    )
+    time_years = np.array([START_YEAR, END_YEAR], dtype=np.float32)
     data = np.random.uniform(0.0, 100.0, (2, 10, 20)).astype(np.float32)
 
-    ds = _make_spatial_dataset("delta_bed", data, time_days, small_lat, small_lon)
+    ds = _make_spatial_dataset("delta_bed", data, time_years, small_lat, small_lon)
     ds.to_netcdf(path, unlimited_dims=("time",),
                  encoding={"delta_bed": {"dtype": "f4", "_FillValue": None},
                             "time": {"dtype": "f4", "_FillValue": None}})
@@ -266,13 +286,10 @@ def test_wrong_lat_range(case_dir):
 
     bad_lat = np.linspace(0.0, 180.0, 257, dtype=np.float32)
     lon = np.linspace(0.0, 360.0, 513, endpoint=False, dtype=np.float32)
-    time_days = np.array(
-        [generator._year_to_days(START_YEAR), generator._year_to_days(END_YEAR)],
-        dtype=np.float32,
-    )
+    time_years = np.array([START_YEAR, END_YEAR], dtype=np.float32)
     data = np.random.uniform(-10.0, 10.0, (2, 257, 513)).astype(np.float32)
 
-    ds = _make_spatial_dataset("delta_g", data, time_days, bad_lat, lon)
+    ds = _make_spatial_dataset("delta_g", data, time_years, bad_lat, lon)
     ds.to_netcdf(path, unlimited_dims=("time",),
                  encoding={"delta_g": {"dtype": "f4", "_FillValue": None},
                             "time": {"dtype": "f4", "_FillValue": None}})
@@ -281,6 +298,43 @@ def test_wrong_lat_range(case_dir):
 
     assert summary["total_spatial_errors"] >= 1
     assert "north edge" in summary["log_text"]
+
+
+def test_forcing_grid_match_passes(case_dir, tmp_path):
+    """A forcing file whose grid matches the data passes the grid comparison."""
+    lat, lon = generator._make_grid()
+    forcing = write_forcing(
+        tmp_path / "forcing.nc", lat, lon, [START_YEAR, END_YEAR]
+    )
+
+    summary = checker.run_checker(
+        source_path=str(case_dir),
+        forcing_path=str(forcing),
+        workdir=str(REPO_ROOT),
+        commit_num="tests",
+    )
+
+    assert summary["total_spatial_errors"] == 0
+    assert "grid matches forcing: passed" in summary["log_text"]
+
+
+def test_forcing_grid_mismatch_detected(case_dir, tmp_path):
+    """A forcing file with a shifted latitude grid is flagged as a spatial error."""
+    lat, lon = generator._make_grid()
+    shifted_lat = lat + 0.05  # well beyond the relative tolerance
+    forcing = write_forcing(
+        tmp_path / "forcing.nc", shifted_lat, lon, [START_YEAR, END_YEAR]
+    )
+
+    summary = checker.run_checker(
+        source_path=str(case_dir),
+        forcing_path=str(forcing),
+        workdir=str(REPO_ROOT),
+        commit_num="tests",
+    )
+
+    assert summary["total_spatial_errors"] >= 1
+    assert "does not match the forcing grid" in summary["log_text"]
 
 
 # ---------------------------------------------------------------------------
@@ -307,7 +361,7 @@ def test_missing_global_attribute(case_dir):
 
     summary = run_checker(case_dir)
 
-    assert summary["total_attr_errors"] >= 1
+    assert summary["total_meta_attr_errors"] >= 1
     assert "contact_email" in summary["log_text"]
 
 
@@ -316,7 +370,7 @@ def test_wrong_reference_frame(case_dir):
 
     summary = run_checker(case_dir)
 
-    assert summary["total_attr_errors"] >= 1
+    assert summary["total_meta_attr_errors"] >= 1
     assert "reference_frame" in summary["log_text"]
 
 
@@ -326,7 +380,7 @@ def test_missing_long_name(case_dir):
 
     summary = run_checker(case_dir)
 
-    assert summary["total_attr_errors"] >= 1
+    assert summary["total_var_attr_errors"] >= 1
     assert "long_name" in summary["log_text"]
 
 
@@ -337,20 +391,17 @@ def test_wrong_dtype(case_dir, tmp_path):
 
     lat = np.linspace(-90.0, 90.0, 257, dtype=np.float32)
     lon = np.linspace(0.0, 360.0, 513, endpoint=False, dtype=np.float32)
-    time_days = np.array(
-        [generator._year_to_days(START_YEAR), generator._year_to_days(END_YEAR)],
-        dtype=np.float32,
-    )
+    time_years = np.array([START_YEAR, END_YEAR], dtype=np.float32)
     data = np.random.uniform(-100.0, 100.0, (2, 257, 513)).astype(np.float64)
 
-    ds = _make_spatial_dataset("delta_bed", data, time_days, lat, lon)
+    ds = _make_spatial_dataset("delta_bed", data, time_years, lat, lon)
     ds.to_netcdf(path, unlimited_dims=("time",),
                  encoding={"delta_bed": {"dtype": "f8", "_FillValue": None},
                             "time": {"dtype": "f4", "_FillValue": None}})
 
     summary = run_checker(case_dir)
 
-    assert summary["total_attr_errors"] >= 1
+    assert summary["total_var_attr_errors"] >= 1
     assert "float32" in summary["log_text"]
 
 
@@ -358,7 +409,7 @@ def test_wrong_dtype(case_dir, tmp_path):
 # Utility
 # ---------------------------------------------------------------------------
 
-def _make_spatial_dataset(var_name, data, time_days, lat, lon):
+def _make_spatial_dataset(var_name, data, time_years, lat, lon):
     """Build a minimal xarray Dataset for a (time, lat, lon) variable."""
     from giamip_compliance_checker import GIAMIP_VAR_META
     import xarray as xr
@@ -371,9 +422,7 @@ def _make_spatial_dataset(var_name, data, time_days, lat, lon):
     ds = xr.Dataset(
         {var_name: (("time", "lat", "lon"), data, attrs)},
         coords={
-            "time": ("time", time_days, {
-                "units": generator.TIME_UNITS, "calendar": generator.CALENDAR,
-            }),
+            "time": ("time", time_years, {"units": generator.TIME_UNITS}),
             "lat": ("lat", lat, {"units": "degrees_north"}),
             "lon": ("lon", lon, {"units": "degrees_east"}),
         },

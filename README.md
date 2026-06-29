@@ -1,14 +1,14 @@
 # GIAMIP GIA Simulation Compliance Checker
 
-Checks GIAMIP NetCDF simulation datasets for compliance with the GIAMIP data request conventions. The following categories are validated for every file:
+Checks GIAMIP NetCDF simulation datasets for compliance with the GIAMIP data request conventions. Each experiment is first checked for **missing mandatory variables**, then the following categories are validated for every file:
 
-1. **Naming** — variable name, experiment ID, group name, and model name; mandatory variables must all be present.
-2. **Numerical** — units match the data request; no NaN values are present; mask variables (`ocean_area_fraction`, `land_ice_area_fraction`) have all values within [0, 1].
-3. **Spatial** *(lat/lon/time variables only)* — global Gaussian grid of 257 × 513 nodes; latitude spans [−90, 90]; longitude spans [0, 360).
-4. **Time** — time axis is monotonically increasing; start and end years fall within the allowed range for the experiment.
-5. **Attributes** — required global attributes (`group`, `model`, `contact_name`, `contact_email`, `reference_frame`) are present; `reference_frame` must be `CM`; time units start with `days since`; all data variables are float32.
+1. **Naming** — variable name, experiment ID, group name, and model name follow the filename convention.
+2. **Numerical** — no NaN/missing values; all values lie within the variable's plausible range (`bounds` in the variable metadata).
+3. **Spatial** *(lat/lon/time variables only)* — global Gaussian grid of 257 × 513 nodes; latitude spans [−90, 90]; longitude spans [0, 360); and the lat/lon grid matches the forcing grid (within a relative tolerance).
+4. **Time** — time axis is monotonically increasing; time values are calendar years and are compared year-by-year against the forcing file's `year` variable.
+5. **Attributes** — reported in three buckets: **metadata** (global attributes `group`, `model`, `contact_name`, `contact_email`, `reference_frame`; `reference_frame` must be `CM`), **coordinate** (time units `year`; lat/lon units present), and **variable** (units match the data request, `long_name` present, `standard_name` matches when specified, data variable is float32).
 
-Compliance criteria are defined in `giamip_compliance_checker.py` (variable metadata) and `experiments_giamip.csv` (valid experiment year ranges).
+Compliance criteria are defined in `giamip_compliance_checker.py`: variable metadata in `GIAMIP_VARIABLES` and the valid experiments (`Exp01`–`Exp12`) in `GIAMIP_EXPERIMENTS`. The forcing file supplies the reference time axis and grid.
 
 ---
 
@@ -25,15 +25,18 @@ Dependencies: Python 3.14, `numpy` 2.4, `xarray` 2026.4, `cftime` 1.6, `netCDF4`
 
 ## Running the checker
 
-The script must be run from the repository root. It writes `giamip_compliance_checker_log.txt` into the `--source-path` directory.
+The script must be run from the repository root. It writes `compliance_checker_log.txt` into the `--source-path` directory. A `--forcing-path` is **required** — the forcing file provides the reference time axis (`year`) and grid that outputs are validated against.
 
 ```bash
-python giamip_compliance_checker.py --source-path ./models/GIAMIP/Exp01/CORE
+python giamip_compliance_checker.py \
+    --source-path ./models/CUBoulder-SemiAnalytic \
+    --forcing-path ./input/iceHistory-PaleoMIST_1a.nc
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--source-path` | `./models/GIAMIP/Exp01/CORE` | Directory containing `.nc` files to check |
+| `--forcing-path` | *(required)* | Forcing NetCDF file used to validate output time axes and grid |
 
 ---
 
@@ -45,9 +48,9 @@ Each output file must be named:
 {variable_name}_{experiment_id}_{group}_{model}.nc
 ```
 
-For example: `bed_Exp01_AWI_MyModel.nc`
+For example: `delta_bed_Exp01_AWI_MyModel.nc`
 
-Valid experiment IDs are defined in `experiments_giamip.csv`.
+Valid experiment IDs (`Exp01`–`Exp12`) are defined by `GIAMIP_EXPERIMENTS` in `giamip_compliance_checker.py`.
 
 ---
 
@@ -85,7 +88,7 @@ conda activate isschecker
 python generate/generate_giamip_test_files.py --experiment-id Exp01 --group MYGROUP --model MyModel
 
 # Generate a single variable
-python generate/generate_giamip_test_files.py --variable bed --experiment-id Exp01 --group MYGROUP --model MyModel
+python generate/generate_giamip_test_files.py --variable delta_bed --experiment-id Exp01 --group MYGROUP --model MyModel
 
 # Custom time range and step count
 python generate/generate_giamip_test_files.py --start-year 1 --end-year 2001 --n-steps 3

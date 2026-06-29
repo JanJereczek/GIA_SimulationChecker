@@ -8,14 +8,13 @@ following the naming convention:
 
     {variable_name}_{experiment_id}_{group_name}_{model_name}.nc
 
-Time encoding:  "days since 0001-01-01 00:00:00", calendar "proleptic_gregorian".
+Time encoding:  the time coordinate holds calendar years directly (units "year").
 All data variables use float32.
 """
 
 import argparse
 from pathlib import Path
 
-import cftime
 import netCDF4
 import numpy as np
 import xarray as xr
@@ -25,8 +24,7 @@ from giamip_compliance_checker import GIAMIP_VARIABLES, GIAMIP_VAR_META
 # Full GIAMIP output grid
 NLAT = 257
 NLON = 513
-TIME_UNITS = "days since 0001-01-01 00:00:00"
-CALENDAR = "proleptic_gregorian"
+TIME_UNITS = "year"
 
 
 def _make_grid():
@@ -35,12 +33,6 @@ def _make_grid():
     lat = np.linspace(-90.0 + step / 2, 90.0 - step / 2, NLAT, dtype=np.float32)
     lon = np.linspace(0.0, 360.0, NLON, endpoint=False, dtype=np.float32)
     return lat, lon
-
-
-def _year_to_days(year: int) -> float:
-    """Convert an integer year to days since 0001-01-01 (proleptic_gregorian)."""
-    date = cftime.DatetimeProlepticGregorian(year, 1, 1)
-    return float(cftime.date2num(date, TIME_UNITS, CALENDAR))
 
 
 def create_giamip_file(
@@ -64,9 +56,8 @@ def create_giamip_file(
     var_meta = GIAMIP_VAR_META[variable_name]
     dim_type = var_meta["dim"]   # "lat_lon_t" | "t" | "degree_order"
 
-    # --- Build time axis ---
-    year_values = np.linspace(start_year, end_year, n_steps, dtype=float)
-    time_days = np.array([_year_to_days(int(y)) for y in year_values], dtype=np.float32)
+    # --- Build time axis (calendar years stored directly) ---
+    time_years = np.linspace(start_year, end_year, n_steps, dtype=np.float32)
 
     # --- Build data ---
     if dim_type == "lat_lon_t":
@@ -77,9 +68,7 @@ def create_giamip_file(
             data = data * 100.0  # give some spread for non-mask vars
 
         coords = {
-            "time": ("time", time_days, {
-                "units": TIME_UNITS, "calendar": CALENDAR,
-            }),
+            "time": ("time", time_years, {"units": TIME_UNITS}),
             "lat": ("lat", lat, {"units": "degrees_north", "long_name": "latitude"}),
             "lon": ("lon", lon, {"units": "degrees_east", "long_name": "longitude"}),
         }
@@ -92,12 +81,13 @@ def create_giamip_file(
         }
 
     elif dim_type == "t":
-        data = np.random.uniform(1e10, 1e12, n_steps).astype(np.float32)
+        # Draw values comfortably inside the variable's plausible bounds.
+        lo, hi = var_meta.get("bounds", (0.0, 1.0))
+        mid, half = 0.5 * (lo + hi), 0.2 * (hi - lo)
+        data = np.random.uniform(mid - half, mid + half, n_steps).astype(np.float32)
 
         coords = {
-            "time": ("time", time_days, {
-                "units": TIME_UNITS, "calendar": CALENDAR,
-            }),
+            "time": ("time", time_years, {"units": TIME_UNITS}),
         }
         data_vars = {
             variable_name: (
