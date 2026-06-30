@@ -14,8 +14,13 @@ Compliance criteria are defined in `giamip_compliance_checker.py`: variable meta
 
 ## Setup
 
+To create the environment (only the first time):
 ```bash
 conda env create -f isschecker_env.yml
+```
+
+Once the environment is created, you need to activate it (each time you use the code):
+```bash
 conda activate isschecker
 ```
 
