@@ -206,6 +206,137 @@ def test_missing_mandatory_variable(case_dir):
 
 
 # ---------------------------------------------------------------------------
+# Tests: filename parsing, incl. optional ensemble-member identifier (_mYY)
+# ---------------------------------------------------------------------------
+
+def test_parse_filename_without_member():
+    assert checker._parse_giamip_filename("delta_g_Exp03_JPL_ISSM-SLC.nc") == (
+        "delta_g", "Exp03", "JPL", "ISSM-SLC"
+    )
+
+
+def test_parse_filename_with_member():
+    # Member is folded into the returned experiment id.
+    assert checker._parse_giamip_filename("delta_g_Exp10_m01_JPL_ISSM-SLC.nc") == (
+        "delta_g", "Exp10_m01", "JPL", "ISSM-SLC"
+    )
+    # Works for multi-token variable names too.
+    assert checker._parse_giamip_filename(
+        "ocean_area_fraction_Exp08_m02_GRP_MOD.nc"
+    ) == ("ocean_area_fraction", "Exp08_m02", "GRP", "MOD")
+
+
+def test_parse_filename_members_are_distinct():
+    m01 = checker._parse_giamip_filename("maf_Exp10_m01_JPL_ISSM-SLC.nc")
+    m02 = checker._parse_giamip_filename("maf_Exp10_m02_JPL_ISSM-SLC.nc")
+    assert m01[1] == "Exp10_m01"
+    assert m02[1] == "Exp10_m02"
+    assert m01[1] != m02[1]
+
+
+def test_parse_filename_extra_field_is_rejected():
+    # A 4th trailing field that is not a valid member (mYY) is malformed.
+    assert checker._parse_giamip_filename("maf_Exp10_NOTAMEMBER_JPL_MOD.nc") is None
+
+
+def test_ensemble_members_treated_as_separate_experiments(tmp_path):
+    """m01 and m02 are independent experiments, each requiring all mandatory vars."""
+    root = tmp_path / "members"
+    for member in ("Exp01_m01", "Exp01_m02"):
+        generator.create_all_mandatory_files(
+            output_dir=root, experiment_id=member, group=GROUP, model=MODEL,
+            start_year=START_YEAR, end_year=END_YEAR, n_steps=2,
+        )
+    # Drop one mandatory variable from m02 only.
+    next(root.glob("maf_Exp01_m02_*.nc")).unlink()
+
+    summary = checker.run_checker(
+        source_path=str(root), forcing_path=None,
+        workdir=str(REPO_ROOT), commit_num="tests",
+    )
+
+    # Only m02 should report a missing mandatory variable; m01 is complete.
+    assert summary["total_file_errors"] >= 1
+    assert "In experiment Exp01_m02" in summary["log_text"]
+    assert "Exp01_m01: all mandatory variables present" in summary["log_text"]
+
+
+# ---------------------------------------------------------------------------
+# Tests: model- and full-level orchestration (loop over experiments / models)
+# ---------------------------------------------------------------------------
+
+def test_forcing_mapping():
+    # Exp05 and Exp08 share the PaleoMIST forcing.
+    assert checker.EXPERIMENT_FORCING["Exp05"] == "iceHistory-PaleoMIST_1a.nc"
+    assert checker.EXPERIMENT_FORCING["Exp05"] == checker.EXPERIMENT_FORCING["Exp08"]
+    # All 12 experiments are mapped.
+    assert set(checker.EXPERIMENT_FORCING) == set(checker.GIAMIP_EXPERIMENTS)
+    # Member ids resolve via the base experiment.
+    p = checker._forcing_path_for_experiment("Exp05_m02", "/some/input")
+    assert p.endswith("iceHistory-PaleoMIST_1a.nc")
+    assert "some/input" in p
+    # Unknown experiment -> no mapping.
+    assert checker._forcing_path_for_experiment("NotAnExp", "/x") is None
+
+
+def _make_experiment_dir(parent, experiment_id):
+    generator.create_all_mandatory_files(
+        output_dir=parent / experiment_id, experiment_id=experiment_id,
+        group=GROUP, model=MODEL, start_year=START_YEAR, end_year=END_YEAR, n_steps=2,
+    )
+
+
+def test_run_model_checker_loops_over_experiments(tmp_path):
+    model = tmp_path / "SomeModel"
+    _make_experiment_dir(model, "Exp01")
+    _make_experiment_dir(model, "Exp05")
+    forcing_dir = tmp_path / "input"  # intentionally empty (forcing not delivered yet)
+    forcing_dir.mkdir()
+
+    results = checker.run_model_checker(
+        source_dir=str(model), forcing_dir=str(forcing_dir),
+        workdir=str(REPO_ROOT), commit_num="tests",
+    )
+
+    assert set(results) == {"Exp01", "Exp05"}
+    # No forcing files present -> only intrinsic checks; generated files comply.
+    assert results["Exp01"]["total_errors"] == 0
+    assert results["Exp05"]["total_errors"] == 0
+
+
+def test_run_model_checker_skips_non_experiment_dirs(tmp_path):
+    model = tmp_path / "SomeModel"
+    _make_experiment_dir(model, "Exp05")
+    (model / "notes").mkdir()  # should be ignored
+    forcing_dir = tmp_path / "input"
+    forcing_dir.mkdir()
+
+    results = checker.run_model_checker(
+        source_dir=str(model), forcing_dir=str(forcing_dir),
+        workdir=str(REPO_ROOT), commit_num="tests",
+    )
+
+    assert set(results) == {"Exp05"}
+
+
+def test_run_full_checker_loops_over_models(tmp_path):
+    out = tmp_path / "output"
+    for model_name in ("ModelA", "ModelB"):
+        _make_experiment_dir(out / model_name, "Exp05")
+    forcing_dir = tmp_path / "input"
+    forcing_dir.mkdir()
+
+    results = checker.run_full_checker(
+        output_dir=str(out), forcing_dir=str(forcing_dir),
+        workdir=str(REPO_ROOT), commit_num="tests",
+    )
+
+    assert set(results) == {"ModelA", "ModelB"}
+    assert results["ModelA"]["Exp05"]["total_errors"] == 0
+    assert results["ModelB"]["Exp05"]["total_errors"] == 0
+
+
+# ---------------------------------------------------------------------------
 # Tests: numerical errors
 # ---------------------------------------------------------------------------
 
@@ -251,6 +382,33 @@ def test_out_of_bounds_detected(case_dir):
 
     assert summary["total_num_errors"] >= 1
     assert "outside its plausible range" in summary["log_text"]
+
+
+# ---------------------------------------------------------------------------
+# Tests: dimension ordering
+# ---------------------------------------------------------------------------
+
+def test_baseline_has_no_dimension_errors(case_dir):
+    summary = run_checker(case_dir)
+    assert summary["total_dim_errors"] == 0
+    assert "Dimension ordering" in summary["log_text"]
+
+
+def test_wrong_dimension_order_detected(case_dir):
+    """Transpose a field to (lat, lon, time) — wrong order — and expect an error."""
+    import xarray as xr
+
+    path = file_for(case_dir, "delta_bed")
+    with xr.open_dataset(path, decode_times=False) as ds:
+        ds = ds.load()
+    ds["delta_bed"] = ds["delta_bed"].transpose("lat", "lon", "time")
+    path.unlink()
+    ds.to_netcdf(path)
+
+    summary = run_checker(case_dir)
+
+    assert summary["total_dim_errors"] >= 1
+    assert "dimension ordering" in summary["log_text"].lower()
 
 
 # ---------------------------------------------------------------------------

@@ -5,6 +5,7 @@ Checks GIAMIP NetCDF simulation datasets for compliance with the GIAMIP data req
 1. **Naming** — variable name, experiment ID, group name, and model name follow the filename convention.
 2. **Numerical** — no NaN/missing values; all values lie within the variable's plausible range (`bounds` in the variable metadata).
 3. **Spatial** *(lat/lon/time variables only)* — global Gaussian grid of 257 × 513 nodes; latitude spans [−90, 90]; longitude spans [0, 360); and the lat/lon grid matches the forcing grid (within a relative tolerance).
+   - **Dimension ordering** — variable dimensions are in the expected order: `(time, lat, lon)` for fields, `(time,)` for scalars, `(degree, order)` for `Clm`/`Slm`.
 4. **Time** — time axis is monotonically increasing; time values are calendar years and are compared year-by-year against the forcing file's `year` variable.
 5. **Attributes** — reported in three buckets: **metadata** (global attributes `group`, `model`, `contact_name`, `contact_email`, `reference_frame`; `reference_frame` must be `CM`), **coordinate** (time units `year`; lat/lon units present), and **variable** (units match the data request, `long_name` present, `standard_name` matches when specified, data variable is float32).
 
@@ -30,18 +31,52 @@ Dependencies: Python 3.14, `numpy` 2.4, `xarray` 2026.4, `netCDF4` 1.7, `tqdm` 4
 
 ## Running the checker
 
-The script must be run from the repository root. It writes `compliance_checker_log.txt` into the `--source-path` directory. A `--forcing-path` is **required** — the forcing file provides the reference time axis (`year`) and grid that outputs are validated against.
+All scripts must be run from the repository root. There are three entry points, at increasing scope. Argument names indicate whether a **directory** (`-dir`) or a single **file** (`-filepath`) is expected.
+
+### 1. Single experiment
+
+Checks the `.nc` files in **one experiment directory** against **one forcing file**. Writes `compliance_checker_log.txt` into the source directory.
 
 ```bash
 python giamip_compliance_checker.py \
-    --source-path ./output/CUBoulder-SemiAnalytic \
-    --forcing-path ./input/iceHistory-PaleoMIST_1a.nc
+    --source-dir ./output/CUBoulder-SemiAnalytic/Exp05 \
+    --forcing-filepath ./input/iceHistory-PaleoMIST_1a.nc
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--source-path` | *(required)* | Directory containing `.nc` files to check |
-| `--forcing-path` | *(required)* | Forcing NetCDF file used to validate output time axes and grid |
+| `--source-dir` | *(required)* | Directory of `.nc` files for a single experiment |
+| `--forcing-filepath` | *(required)* | Forcing NetCDF **file** used to validate output time axes and grid |
+
+### 2. All experiments of one model
+
+Loops over every experiment subdirectory of a **model directory** (`Exp01`, `Exp05`, …) and automatically selects each experiment's forcing file from `--forcing-dir`, according to the mapping in [experiments.md](experiments.md). Missing forcing files are skipped with a warning (the experiment is still checked, minus the time/grid comparisons).
+
+```bash
+python giamip_model_compliance_checker.py \
+    --source-dir ./output/CUBoulder-SemiAnalytic \
+    --forcing-dir ./input/
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--source-dir` | *(required)* | Model directory containing experiment subdirectories |
+| `--forcing-dir` | *(required)* | Directory containing the forcing NetCDF files |
+
+### 3. All models at once
+
+Loops over every model directory under the output directory, each looping over its experiments (as above). Use this to check all submitted experiments in one go.
+
+```bash
+python giamip_full_compliance_checker.py \
+    --source-dir ./output \
+    --forcing-dir ./input
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--source-dir` | *(required)* | Top-level directory containing model subdirectories |
+| `--forcing-dir` | *(required)* | Directory containing the forcing NetCDF files |
 
 ---
 

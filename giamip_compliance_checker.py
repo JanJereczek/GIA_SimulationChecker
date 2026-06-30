@@ -19,6 +19,10 @@
 #    - If a forcing file is provided, the lat/lon grid matches the forcing grid
 #      within a relative tolerance (GIAMIP_GRID_RELTOL).
 #
+# 3b. Dimension ordering (_check_dimensions)
+#    - Variable dimensions are in the expected order: (time, lat, lon) for fields,
+#      (time,) for scalars, (degree, order) for Clm/Slm.
+#
 # 4. Time (_check_time)  [t and lat/lon/t variables only]
 #    - Time dimension is present and values are monotonically increasing.
 #    - Time values are calendar years. If a forcing file is provided, they are
@@ -49,6 +53,7 @@ if __name__ == "__main__":
         os.execv(_CONDA_PYTHON, [_CONDA_PYTHON] + sys.argv)
 
 import datetime
+import re
 import subprocess
 import argparse
 
@@ -58,6 +63,26 @@ from tqdm import tqdm
 
 
 GIAMIP_EXPERIMENTS = [f"Exp{i:02d}" for i in range(1, 13)]
+
+# Forcing (ice-history) file associated with each experiment, per experiments.md.
+# Several experiments share an ice model but differ in period (122 ka vs 80 ka),
+# so the mapping is per-experiment rather than per-ice-model.
+# NOTE: only iceHistory-PaleoMIST_1a.nc currently exists; the other names are
+# PLACEHOLDERS — update them (or rename the delivered forcing files) to match.
+EXPERIMENT_FORCING = {
+    "Exp01": "iceHistory-ICE6G_D_122ka.nc",        # ICE-6G_D, 122 ka
+    "Exp02": "iceHistory-ICE7G_NA_122ka.nc",       # ICE-7G_NA, 122 ka
+    "Exp03": "iceHistory-GLAC3b_profile1_122ka.nc",  # GLAC3b Profile 1, 122 ka
+    "Exp04": "iceHistory-GLAC3b_profile2_122ka.nc",  # GLAC3b Profile 2, 122 ka
+    "Exp05": "iceHistory-PaleoMIST_1a.nc",         # PaleoMIST (Version a1), 80 ka — available
+    "Exp06": "iceHistory-ICE6G_D_80ka.nc",         # ICE-6G_D, 80 ka
+    "Exp07": "iceHistory-ICE7G_NA_80ka.nc",        # ICE-7G_NA, 80 ka
+    "Exp08": "iceHistory-PaleoMIST_1a.nc",         # PaleoMIST, 80 ka — same as Exp05
+    "Exp09": "iceHistory-GLAC3b_profile1_122ka.nc",  # GLAC3b Profile 1, 122 ka — same as Exp03
+    "Exp10": "iceHistory-GLAC3b_profile2_122ka.nc",  # GLAC3b Profile 2, 122 ka — same as Exp04
+    "Exp11": "iceHistory-GLAC3b_profile3_122ka.nc",  # GLAC3b Profile 3, 122 ka
+    "Exp12": "iceHistory-ICE6G_D_122ka.nc",        # ICE-6G_D, 122 ka — same as Exp01
+}
 
 # GIAMIP file naming convention:
 # {var}_{experiment_id}_{group_name}_{model_name}.nc
@@ -175,14 +200,37 @@ _GIAMIP_VAR_NAMES_BY_PARTS = sorted(
     GIAMIP_VAR_NAMES, key=lambda n: n.count("_"), reverse=True
 )
 
+# Optional ensemble-member identifier appended to the experiment id, e.g. "m01".
+_MEMBER_RE = re.compile(r"m\d+")
+
+
+def _split_experiment_id(experiment_name: str):
+    """Split an experiment id into (base, member).
+
+    "Exp10_m01" -> ("Exp10", "m01");  "Exp05" -> ("Exp05", None).
+    """
+    base, _, tail = experiment_name.rpartition("_")
+    if base and _MEMBER_RE.fullmatch(tail):
+        return base, tail
+    return experiment_name, None
+
+
+def _experiment_base(experiment_name: str) -> str:
+    """Return the base experiment id, stripping any "_mYY" ensemble member."""
+    return _split_experiment_id(experiment_name)[0]
+
 
 def _parse_giamip_filename(file_name: str):
     """Parse a GIAMIP filename into (var_name, exp_id, group, model) or None.
 
-    Convention: {var}_{exp_id}_{group}_{model}.nc
-    Variable names may contain underscores; exp_id, group, and model must not.
-    Returns None if no known variable name is found as a prefix, or if fewer
-    than 3 trailing fields remain after the variable name.
+    Convention: {var}_{exp_id}_{group}_{model}.nc, where exp_id optionally carries
+    an ensemble-member identifier: {var}_{exp_id}_{mYY}_{group}_{model}.nc. When a
+    member is present it is folded into the returned exp_id (e.g. "Exp10_m01"), so
+    each member is treated as a distinct experiment downstream.
+
+    Variable names may contain underscores; exp_id, member, group, and model must
+    not. Returns None if no known variable name is found as a prefix, or if the
+    trailing fields do not match either the 3-field or member-bearing 4-field form.
     """
     stem = file_name[:-3] if file_name.endswith(".nc") else file_name
     parts = stem.split("_")
@@ -191,7 +239,11 @@ def _parse_giamip_filename(file_name: str):
         if parts[:n] == var.split("_"):
             trailing = parts[n:]
             if len(trailing) == 3:
-                return var, trailing[0], trailing[1], trailing[2]
+                exp, group, model = trailing
+                return var, exp, group, model
+            if len(trailing) == 4 and _MEMBER_RE.fullmatch(trailing[1]):
+                exp, member, group, model = trailing
+                return var, f"{exp}_{member}", group, model
     return None
 
 
@@ -219,9 +271,9 @@ def main() -> None:
     _check_environment()
     args = _parse_args()
     run_checker(
-        source_path=args.source_path,
+        source_path=args.source_dir,
         workdir=os.getcwd(),
-        forcing_path=args.forcing_path,
+        forcing_path=args.forcing_filepath,
     )
 
 
@@ -253,6 +305,105 @@ def run_checker(
     return summary
 
 
+def _forcing_path_for_experiment(experiment_name: str, forcing_dir: str):
+    """Return the forcing file path mapped to an experiment, or None if the
+    experiment has no mapping. The returned path is not guaranteed to exist."""
+    fname = EXPERIMENT_FORCING.get(_experiment_base(experiment_name))
+    if fname is None:
+        return None
+    return os.path.join(forcing_dir, fname)
+
+
+def run_model_checker(
+    source_dir: str,
+    forcing_dir: str,
+    workdir: str | None = None,
+    commit_num: str | None = None,
+) -> dict:
+    """Check every experiment subdirectory of a single model directory.
+
+    Each immediate subdirectory whose name is a recognised experiment (e.g.
+    'Exp05' or 'Exp08_m01') is checked with the forcing file mapped to that
+    experiment in EXPERIMENT_FORCING, looked up inside forcing_dir. If the
+    forcing file is missing, the experiment is still checked but the
+    forcing-based time/grid comparisons are skipped.
+
+    Returns a dict mapping experiment id -> summary.
+    """
+    workdir = os.path.abspath(workdir or os.getcwd())
+    commit_num = _get_commit_number() if commit_num is None else commit_num
+
+    if not os.path.isdir(source_dir):
+        print(f"ERROR: Model directory not found: '{source_dir}'.")
+        return {}
+
+    results = {}
+    for name in sorted(os.listdir(source_dir)):
+        exp_dir = os.path.join(source_dir, name)
+        if not os.path.isdir(exp_dir):
+            continue
+        if _experiment_base(name) not in GIAMIP_EXPERIMENTS:
+            print(f"Skipping '{name}': not a recognised GIAMIP experiment directory.")
+            continue
+
+        forcing_path = _forcing_path_for_experiment(name, forcing_dir)
+        if forcing_path is None:
+            print(f"WARNING: no forcing mapping for experiment '{name}'.")
+        elif not os.path.exists(forcing_path):
+            print(
+                f"WARNING: forcing file '{forcing_path}' for experiment '{name}'"
+                " not found; running without forcing-based time/grid checks."
+            )
+            forcing_path = None
+
+        results[name] = run_checker(
+            source_path=exp_dir, forcing_path=forcing_path,
+            workdir=workdir, commit_num=commit_num,
+        )
+
+    _print_rollup(source_dir, results)
+    return results
+
+
+def run_full_checker(
+    output_dir: str,
+    forcing_dir: str,
+    workdir: str | None = None,
+    commit_num: str | None = None,
+) -> dict:
+    """Check every model directory under output_dir, each looping over its
+    experiments (see run_model_checker). Returns a dict mapping model name ->
+    {experiment id: summary}.
+    """
+    workdir = os.path.abspath(workdir or os.getcwd())
+    commit_num = _get_commit_number() if commit_num is None else commit_num
+
+    if not os.path.isdir(output_dir):
+        print(f"ERROR: Output directory not found: '{output_dir}'.")
+        return {}
+
+    results = {}
+    for model in sorted(os.listdir(output_dir)):
+        model_dir = os.path.join(output_dir, model)
+        if not os.path.isdir(model_dir):
+            continue
+        print(f"\n######## Model: {model} ########")
+        results[model] = run_model_checker(
+            model_dir, forcing_dir, workdir=workdir, commit_num=commit_num,
+        )
+    return results
+
+
+def _print_rollup(source_dir: str, results: dict) -> None:
+    print("\n=========================================================================")
+    print(f"Roll-up for {source_dir}:")
+    if not results:
+        print("  (no experiment directories checked)")
+    for exp in sorted(results):
+        print(f"  {exp:16} : {results[exp]['total_errors']} error(s)")
+    print("=========================================================================")
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -273,12 +424,12 @@ def _parse_args() -> argparse.Namespace:
         description="Check GIAMIP simulation NetCDF datasets for compliance."
     )
     parser.add_argument(
-        "--source-path",
+        "--source-dir",
         required=True,
         help="Directory containing the GIAMIP NetCDF files to check.",
     )
     parser.add_argument(
-        "--forcing-path",
+        "--forcing-filepath",
         required=True,
         help="Path to the forcing NetCDF file used to validate output time axes.",
     )
@@ -362,6 +513,7 @@ def _run_compliance_checker(
             total_naming_errors=summary["total_naming_errors"],
             total_num_errors=summary["total_num_errors"],
             total_spatial_errors=summary["total_spatial_errors"],
+            total_dim_errors=summary["total_dim_errors"],
             total_time_errors=summary["total_time_errors"],
             total_meta_attr_errors=summary["total_meta_attr_errors"],
             total_coord_attr_errors=summary["total_coord_attr_errors"],
@@ -383,6 +535,7 @@ def _empty_summary() -> dict:
         "total_naming_errors": 0,
         "total_num_errors": 0,
         "total_spatial_errors": 0,
+        "total_dim_errors": 0,
         "total_time_errors": 0,
         "total_meta_attr_errors": 0,
         "total_coord_attr_errors": 0,
@@ -413,6 +566,7 @@ def _process_experiments(
     total_naming_errors = 0
     total_num_errors = 0
     total_spatial_errors = 0
+    total_dim_errors = 0
     total_time_errors = 0
     total_meta_attr_errors = 0
     total_coord_attr_errors = 0
@@ -437,6 +591,7 @@ def _process_experiments(
         total_naming_errors += exp_summary["exp_naming_errors"]
         total_num_errors += exp_summary["exp_num_errors"]
         total_spatial_errors += exp_summary["exp_spatial_errors"]
+        total_dim_errors += exp_summary["exp_dim_errors"]
         total_time_errors += exp_summary["exp_time_errors"]
         total_meta_attr_errors += exp_summary["exp_meta_attr_errors"]
         total_coord_attr_errors += exp_summary["exp_coord_attr_errors"]
@@ -446,7 +601,7 @@ def _process_experiments(
         _print_experiment_summary(exp_summary["experiment_name"], exp_summary["exp_errors"])
 
     total_errors = (
-        total_naming_errors + total_num_errors + total_spatial_errors
+        total_naming_errors + total_num_errors + total_spatial_errors + total_dim_errors
         + total_time_errors + total_meta_attr_errors + total_coord_attr_errors
         + total_var_attr_errors + total_file_errors
     )
@@ -459,6 +614,7 @@ def _process_experiments(
         "total_naming_errors": total_naming_errors,
         "total_num_errors": total_num_errors,
         "total_spatial_errors": total_spatial_errors,
+        "total_dim_errors": total_dim_errors,
         "total_time_errors": total_time_errors,
         "total_meta_attr_errors": total_meta_attr_errors,
         "total_coord_attr_errors": total_coord_attr_errors,
@@ -480,6 +636,7 @@ def _process_single_experiment(
     exp_naming_errors = 0
     exp_num_errors = 0
     exp_spatial_errors = 0
+    exp_dim_errors = 0
     exp_time_errors = 0
     exp_meta_attr_errors = 0
     exp_coord_attr_errors = 0
@@ -492,7 +649,7 @@ def _process_single_experiment(
     log_file.write("**********************************************************\n")
     log_file.write("\n ")
 
-    if experiment_name not in experiments:
+    if _experiment_base(experiment_name) not in experiments:
         log_file.write(
             f"ERROR: The compliance check is ignored for experiment '{experiment_name}'"
             f" as it is not in {experiments}.\n"
@@ -508,6 +665,7 @@ def _process_single_experiment(
             "exp_naming_errors": exp_naming_errors,
             "exp_num_errors": 0,
             "exp_spatial_errors": 0,
+            "exp_dim_errors": 0,
             "exp_time_errors": 0,
             "exp_meta_attr_errors": 0,
             "exp_coord_attr_errors": 0,
@@ -548,13 +706,14 @@ def _process_single_experiment(
         exp_naming_errors += file_summary["var_naming_errors"]
         exp_num_errors += file_summary["var_num_errors"]
         exp_spatial_errors += file_summary["var_spatial_errors"]
+        exp_dim_errors += file_summary["var_dim_errors"]
         exp_time_errors += file_summary["var_time_errors"]
         exp_meta_attr_errors += file_summary["var_meta_attr_errors"]
         exp_coord_attr_errors += file_summary["var_coord_attr_errors"]
         exp_var_attr_errors += file_summary["var_var_attr_errors"]
 
     exp_errors = (
-        exp_naming_errors + exp_num_errors + exp_spatial_errors
+        exp_naming_errors + exp_num_errors + exp_spatial_errors + exp_dim_errors
         + exp_time_errors + exp_meta_attr_errors + exp_coord_attr_errors
         + exp_var_attr_errors + exp_file_errors
     )
@@ -565,6 +724,7 @@ def _process_single_experiment(
         "exp_naming_errors": exp_naming_errors,
         "exp_num_errors": exp_num_errors,
         "exp_spatial_errors": exp_spatial_errors,
+        "exp_dim_errors": exp_dim_errors,
         "exp_time_errors": exp_time_errors,
         "exp_meta_attr_errors": exp_meta_attr_errors,
         "exp_coord_attr_errors": exp_coord_attr_errors,
@@ -583,7 +743,7 @@ def _process_single_file(
     forcing=None,
 ) -> dict:
     zero = {"var_naming_errors": 0, "var_num_errors": 0,
-            "var_spatial_errors": 0, "var_time_errors": 0,
+            "var_spatial_errors": 0, "var_dim_errors": 0, "var_time_errors": 0,
             "var_meta_attr_errors": 0, "var_coord_attr_errors": 0,
             "var_var_attr_errors": 0}
 
@@ -597,7 +757,7 @@ def _process_single_file(
         log_file.write(f" - ERROR: Cannot open {file}: {e}\n")
         return {**zero, "var_naming_errors": 1}
 
-    (naming_errors, num_errors, spatial_errors, time_errors,
+    (naming_errors, num_errors, spatial_errors, dim_errors, time_errors,
      meta_attr_errors, coord_attr_errors, var_attr_errors) = _run_variable_checks(
         log_file=log_file,
         ds=ds,
@@ -609,7 +769,7 @@ def _process_single_file(
         forcing=forcing,
     )
 
-    total = (naming_errors + num_errors + spatial_errors + time_errors
+    total = (naming_errors + num_errors + spatial_errors + dim_errors + time_errors
              + meta_attr_errors + coord_attr_errors + var_attr_errors)
     log_file.write("\n")
     log_file.write("----------------------------------------------------------\n")
@@ -625,6 +785,7 @@ def _process_single_file(
         "var_naming_errors": naming_errors,
         "var_num_errors": num_errors,
         "var_spatial_errors": spatial_errors,
+        "var_dim_errors": dim_errors,
         "var_time_errors": time_errors,
         "var_meta_attr_errors": meta_attr_errors,
         "var_coord_attr_errors": coord_attr_errors,
@@ -663,7 +824,7 @@ def _check_naming(
         )
         errors += 1
 
-    if experiment_name not in experiments:
+    if _experiment_base(experiment_name) not in experiments:
         log_file.write(
             f" - ERROR: experiment '{experiment_name}' is not a known GIAMIP experiment.\n"
         )
@@ -826,6 +987,36 @@ def _check_grid_matches_forcing(log_file, name: str, vals, forcing_vals) -> int:
         f" (max abs difference {max_diff}, reltol {GIAMIP_GRID_RELTOL}).\n"
     )
     return 1
+
+
+# Expected dimension ordering for each dim type. The time dimension may be named
+# "time" or "t" in the data; both are normalised to "time" before comparison.
+_EXPECTED_DIMS = {
+    "lat_lon_t": ("time", "lat", "lon"),
+    "t": ("time",),
+    "degree_order": ("degree", "order"),
+}
+
+
+def _check_dimensions(log_file, ds: xr.Dataset, var_name: str, dim_type: str) -> int:
+    errors = 0
+    log_file.write("DIMENSION Tests \n")
+
+    expected = _EXPECTED_DIMS.get(dim_type)
+    if var_name not in ds or expected is None:
+        log_file.write(" - Dimension ordering: skipped.\n")
+        return errors
+
+    actual = tuple("time" if d == "t" else d for d in ds[var_name].dims)
+    if actual == expected:
+        log_file.write(f" - Dimension ordering {expected}: passed\n")
+    else:
+        log_file.write(
+            f" - ERROR: dimension ordering {tuple(ds[var_name].dims)}"
+            f" does not match expected {expected}.\n"
+        )
+        errors += 1
+    return errors
 
 
 def _check_time(
@@ -1025,6 +1216,7 @@ def _run_variable_checks(
     naming_errors = 0
     num_errors = 0
     spatial_errors = 0
+    dim_errors = 0
     time_errors = 0
     meta_attr_errors = 0
     coord_attr_errors = 0
@@ -1038,7 +1230,7 @@ def _run_variable_checks(
         log_file, file_name, var_name, experiment_name, experiments, report_naming_issues
     )
     if naming_errors:
-        return (naming_errors, num_errors, spatial_errors, time_errors,
+        return (naming_errors, num_errors, spatial_errors, dim_errors, time_errors,
                 meta_attr_errors, coord_attr_errors, var_attr_errors)
 
     var_meta = GIAMIP_VAR_META.get(var_name, {})
@@ -1059,6 +1251,8 @@ def _run_variable_checks(
             log_file, ds, forcing_lat=forcing_lat, forcing_lon=forcing_lon
         )
 
+    dim_errors += _check_dimensions(log_file, ds, var_name, dim_type)
+
     if has_time:
         time_errors += _check_time(
             log_file, ds,
@@ -1071,7 +1265,7 @@ def _run_variable_checks(
     coord_attr_errors += c
     var_attr_errors += v
 
-    return (naming_errors, num_errors, spatial_errors, time_errors,
+    return (naming_errors, num_errors, spatial_errors, dim_errors, time_errors,
             meta_attr_errors, coord_attr_errors, var_attr_errors)
 
 
@@ -1150,6 +1344,7 @@ def _insert_synthesis(
     total_naming_errors: int,
     total_num_errors: int,
     total_spatial_errors: int,
+    total_dim_errors: int,
     total_time_errors: int,
     total_meta_attr_errors: int,
     total_coord_attr_errors: int,
@@ -1172,6 +1367,7 @@ def _insert_synthesis(
     contents.insert(iline, f"  - Naming Tests               : {total_naming_errors} error(s)\n"); iline += 1
     contents.insert(iline, f"  - Numerical Tests            : {total_num_errors} error(s)\n"); iline += 1
     contents.insert(iline, f"  - Spatial Tests              : {total_spatial_errors} error(s)\n"); iline += 1
+    contents.insert(iline, f"  - Dimension Tests            : {total_dim_errors} error(s)\n"); iline += 1
     contents.insert(iline, f"  - Time Tests                 : {total_time_errors} error(s)\n"); iline += 1
     contents.insert(iline, f"  - Metadata Attribute Tests   : {total_meta_attr_errors} error(s)\n"); iline += 1
     contents.insert(iline, f"  - Coordinate Attribute Tests : {total_coord_attr_errors} error(s)\n"); iline += 1
