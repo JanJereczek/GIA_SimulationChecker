@@ -13,11 +13,17 @@ All data variables use float32.
 """
 
 import argparse
+import sys
 from pathlib import Path
 
-import netCDF4
 import numpy as np
 import xarray as xr
+
+# Allow running this script directly (python generate/generate_giamip_test_files.py):
+# ensure the repository root (which holds giamip_compliance_checker.py) is importable.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 from giamip_compliance_checker import GIAMIP_VARIABLES, GIAMIP_VAR_META
 
@@ -194,7 +200,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--output-dir",
-        default="./models/GIAMIP/Exp01/CORE",
+        default="./output/GIAMIP/Exp01/CORE",
         help="Directory for output files.",
     )
     parser.add_argument(

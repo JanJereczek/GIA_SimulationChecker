@@ -5,7 +5,7 @@
 # 1. Naming (_check_naming)
 #    - Filename has exactly 4 underscore-separated fields: {var}_{exp_id}_{group}_{model}.nc
 #    - Variable name (field 0) is a recognised GIAMIP variable name.
-#    - Experiment id (field 1) is present in experiments_giamip.csv.
+#    - Experiment id (field 1) is one of the recognised GIAMIP experiments (GIAMIP_EXPERIMENTS).
 #
 # 2. Numerical (_check_numerical)
 #    - No NaN or missing values are present in the data array.
@@ -41,8 +41,11 @@ import sys
 import os
 
 if __name__ == "__main__":
+    # If the dedicated conda interpreter exists and we are not already running it,
+    # re-exec into it. Guarded by os.path.exists so the script still runs on machines
+    # with a different conda layout/env (relies on the user activating isschecker).
     _CONDA_PYTHON = os.path.expanduser("~/.miniconda3/envs/isschecker/bin/python")
-    if os.path.realpath(sys.executable) != os.path.realpath(_CONDA_PYTHON):
+    if os.path.exists(_CONDA_PYTHON) and os.path.realpath(sys.executable) != os.path.realpath(_CONDA_PYTHON):
         os.execv(_CONDA_PYTHON, [_CONDA_PYTHON] + sys.argv)
 
 import datetime
@@ -51,11 +54,9 @@ import argparse
 
 import numpy as np
 import xarray as xr
-import netCDF4
 from tqdm import tqdm
 
 
-DEFAULT_SOURCE_PATH = "./models/GIAMIP/Exp01/CORE"
 GIAMIP_EXPERIMENTS = [f"Exp{i:02d}" for i in range(1, 13)]
 
 # GIAMIP file naming convention:
@@ -203,7 +204,10 @@ EXPECTED_CONDA_ENV = "isschecker"
 
 def _check_environment() -> None:
     active = os.environ.get("CONDA_DEFAULT_ENV", "")
-    if active != EXPECTED_CONDA_ENV:
+    # Also accept the case where the running interpreter already lives in the
+    # expected env (e.g. invoked by absolute path), even if no env is "activated".
+    running_in_env = os.path.join("envs", EXPECTED_CONDA_ENV) in sys.executable
+    if active != EXPECTED_CONDA_ENV and not running_in_env:
         print(
             f"WARNING: expected conda environment '{EXPECTED_CONDA_ENV}' but"
             f" '{active or '(none)'}' is active. Run 'conda activate {EXPECTED_CONDA_ENV}'"
@@ -270,8 +274,8 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--source-path",
-        default=DEFAULT_SOURCE_PATH,
-        help="Directory containing the GIAMIP NetCDF files.",
+        required=True,
+        help="Directory containing the GIAMIP NetCDF files to check.",
     )
     parser.add_argument(
         "--forcing-path",
@@ -1155,7 +1159,12 @@ def _insert_synthesis(
     with open(os.path.join(source_path, "compliance_checker_log.txt"), "r") as f:
         contents = f.readlines()
 
-    iline = 11
+    # Insert the synthesis into the blank region just after the "Verified directory"
+    # header line, rather than relying on a hard-coded line number.
+    header_idx = next(
+        (i for i, line in enumerate(contents) if line.startswith("Verified directory")), 9
+    )
+    iline = header_idx + 2
     contents.insert(iline, f"{exp_counter} experiments checked.\n"); iline += 1
     contents.insert(iline, f"{file_counter} files checked.\n"); iline += 2
     contents.insert(iline, f"{total_errors} error(s) detected.\n"); iline += 1

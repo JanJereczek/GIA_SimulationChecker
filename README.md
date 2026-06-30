@@ -24,7 +24,7 @@ Once the environment is created, you need to activate it (each time you use the 
 conda activate isschecker
 ```
 
-Dependencies: Python 3.14, `numpy` 2.4, `xarray` 2026.4, `cftime` 1.6, `netCDF4` 1.7, `tqdm` 4.67.
+Dependencies: Python 3.14, `numpy` 2.4, `xarray` 2026.4, `netCDF4` 1.7, `tqdm` 4.67.
 
 ---
 
@@ -34,13 +34,13 @@ The script must be run from the repository root. It writes `compliance_checker_l
 
 ```bash
 python giamip_compliance_checker.py \
-    --source-path ./models/CUBoulder-SemiAnalytic \
+    --source-path ./output/CUBoulder-SemiAnalytic \
     --forcing-path ./input/iceHistory-PaleoMIST_1a.nc
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--source-path` | `./models/GIAMIP/Exp01/CORE` | Directory containing `.nc` files to check |
+| `--source-path` | *(required)* | Directory containing `.nc` files to check |
 | `--forcing-path` | *(required)* | Forcing NetCDF file used to validate output time axes and grid |
 
 ---
@@ -101,7 +101,7 @@ python generate/generate_giamip_test_files.py --start-year 1 --end-year 2001 --n
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--output-dir` | `./models/GIAMIP/Exp01/CORE` | Directory for output files |
+| `--output-dir` | `./output/GIAMIP/Exp01/CORE` | Directory for output files |
 | `--experiment-id` | `Exp01` | Experiment identifier |
 | `--group` | `TESTGROUP` | Group name |
 | `--model` | `TESTMODEL` | Model name |

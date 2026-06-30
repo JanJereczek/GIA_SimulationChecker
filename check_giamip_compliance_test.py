@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Run the GIAMIP compliance checker on models/CUBoulder-SemiAnalytic."""
+"""Run the GIAMIP compliance checker on output/CUBoulder-SemiAnalytic."""
 
 import sys
 import os
 
 _CONDA_PYTHON = os.path.expanduser("~/.miniconda3/envs/isschecker/bin/python")
-if os.path.realpath(sys.executable) != os.path.realpath(_CONDA_PYTHON):
+if os.path.exists(_CONDA_PYTHON) and os.path.realpath(sys.executable) != os.path.realpath(_CONDA_PYTHON):
     os.execv(_CONDA_PYTHON, [_CONDA_PYTHON] + sys.argv)
 
 from pathlib import Path
@@ -16,7 +16,7 @@ if str(REPO_ROOT) not in sys.path:
 
 import giamip_compliance_checker as checker
 
-SOURCE_PATH = REPO_ROOT / "models" / "CUBoulder-SemiAnalytic"
+SOURCE_PATH = REPO_ROOT / "output" / "CUBoulder-SemiAnalytic"
 FORCING_PATH = REPO_ROOT / "input" / "iceHistory-PaleoMIST_1a.nc"
 
 summary = checker.run_checker(
