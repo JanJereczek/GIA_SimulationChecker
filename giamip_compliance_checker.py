@@ -9,6 +9,9 @@
 #
 # 2. Numerical (_check_numerical)
 #    - No NaN or missing values are present in the data array.
+#    - No infinite values are present.
+#    - No '_FillValue'/'missing_value' attribute is declared (the data request
+#      permits no fill value).
 #    - All values lie within the variable's plausible "bounds" (loose sanity-check
 #      range from the data request; for mask variables this is ~[0, 1]).
 #
@@ -24,22 +27,30 @@
 #      (time,) for scalars, (degree, order) for Clm/Slm.
 #
 # 4. Time (_check_time)  [t and lat/lon/t variables only]
-#    - Time dimension is present and values are monotonically increasing.
-#    - Time values are calendar years. If a forcing file is provided, they are
-#      compared year-by-year against the forcing's 'year' variable.
+#    - Time dimension is present and 'time' is monotonically increasing.
+#    - The companion 'year' variable is present, monotonically increasing, and
+#      matches the time axis (year == time/365).
+#    - If a forcing file is provided, 'year' is compared step-by-step against the
+#      forcing's own 'year' variable.
 #
 # 5. Attributes (_check_attributes) — reported in three buckets:
 #    a) Metadata attributes (global):
-#       - group, model, contact_name, contact_email, reference_frame present.
-#       - reference_frame equals "CM" (case-insensitive).
+#       - group, model, contributors_name, contributors_email present.
 #    b) Coordinate attributes:
-#       - Time coordinate has units "year".
+#       - Time coordinate has units "days since 2000-01-01 00:00:00" and
+#         calendar "365_day"; 'year' has units "year".
 #       - lat and lon coordinates have units attributes (lat/lon/t variables).
+#       - Coordinate variables have the long_name and standard_name requested by
+#         the data request (Time/Latitude/Longitude, time/latitude/longitude).
+#       - Coordinate variables have the requested data type (float64, except
+#         'year' which is int32).
 #    c) Variable attributes:
 #       - units match the data request.
-#       - long_name attribute present.
+#       - long_name matches the wording of the data request (case and whitespace
+#         insensitive).
 #       - standard_name matches the data request (only if one is specified).
-#       - Main variable must be single-precision float (float32 / f4).
+#       - dtype matches the precision requested for that variable: float32 for the
+#         gridded fields, float64 for the scalar time series and Clm/Slm.
 
 import sys
 import os
@@ -99,29 +110,47 @@ GIAMIP_LON_EXTENT = (0.0, 360.0)
 GIAMIP_COORD_TOL = 0.1  # degrees tolerance for grid extent checks
 GIAMIP_GRID_RELTOL = 1e-4  # relative tolerance for matching the forcing lat/lon grid
 
+# Time encoding. 'time' is days since 2000-01-01 on a 365-day calendar, and the
+# companion 'year' variable holds the year of each step, offset from 2000 CE:
+# time 0 -> year 0, 365 -> 1, -365 -> -1.
+GIAMIP_YEAR_VAR = "year"
+GIAMIP_TIME_CALENDAR = "365_day"
+GIAMIP_DAYS_PER_YEAR = 365
+# Accepted spellings of the requested time units, "days since 2000-01-01
+# 00:00:00". CF treats the shorter forms as identical, so rejecting them would
+# fail conformant files.
+GIAMIP_TIME_UNITS = "days since 2000-01-01 00:00:00"
+_TIME_UNITS_RE = re.compile(
+    r"^days\s+since\s+2000-0?1-0?1([\sT]+00:00(:00)?)?\s*$", re.IGNORECASE
+)
+
 GIAMIP_VARIABLES = [
     # --- Required 3D (time, lat, lon) ---
     {
         "variable": "delta_bed", "dim": "lat_lon_t", "units": "m",
         "mandatory": True, "output_interval": "forcing",
+        "precision": np.float32,
         "standard_name": None, "bounds": (-3000.0, 3000.0),
         "long_name": "Change in the bedrock elevation relative to the initial simulation time step",
     },
     {
         "variable": "delta_g", "dim": "lat_lon_t", "units": "m",
         "mandatory": True, "output_interval": "forcing",
+        "precision": np.float32,
         "standard_name": None, "bounds": (-500.0, 500.0),
         "long_name": "Change in the geoid height relative to the initial simulation time step",
     },
     {
         "variable": "ocean_area_fraction", "dim": "lat_lon_t", "units": "1",
         "mandatory": True, "output_interval": "forcing",
+        "precision": np.float32,
         "standard_name": "sea_area_fraction", "bounds": (-1e-6, 1.0 + 1e-6),
         "long_name": "Fraction of horizontal grid-cell area covered by ocean",
     },
     {
         "variable": "land_ice_area_fraction", "dim": "lat_lon_t", "units": "1",
         "mandatory": True, "output_interval": "forcing",
+        "precision": np.float32,
         "standard_name": "land_ice_area_fraction", "bounds": (-1e-6, 1.0 + 1e-6),
         "long_name": "Fraction of horizontal grid-cell area covered by grounded and floating land ice",
     },
@@ -129,36 +158,42 @@ GIAMIP_VARIABLES = [
     {
         "variable": "mean_delta_g", "dim": "t", "units": "m",
         "mandatory": True, "output_interval": "forcing",
+        "precision": np.float64,
         "standard_name": None, "bounds": (-300.0, 300.0),
         "long_name": "Spatial mean of geoid height change (delta_g) over the ocean area",
     },
     {
         "variable": "grd_ice_mass", "dim": "t", "units": "kg",
         "mandatory": True, "output_interval": "forcing",
+        "precision": np.float64,
         "standard_name": None, "bounds": (1e18, 1e20),
         "long_name": "Spatial integration of grounded ice volume times ice density",
     },
     {
         "variable": "total_ice_mass", "dim": "t", "units": "kg",
         "mandatory": True, "output_interval": "forcing",
+        "precision": np.float64,
         "standard_name": None, "bounds": (1e18, 1e20),
         "long_name": "Spatial integration, total (grounded and floating) ice volume times ice density",
     },
     {
         "variable": "ocean_area_grdice", "dim": "t", "units": "m2",
         "mandatory": True, "output_interval": "forcing",
+        "precision": np.float64,
         "standard_name": None, "bounds": (1e14, 5e14),
         "long_name": "Total ocean area including marine regions covered by grounded ice",
     },
     {
         "variable": "ocean_area", "dim": "t", "units": "m2",
         "mandatory": True, "output_interval": "forcing",
+        "precision": np.float64,
         "standard_name": None, "bounds": (1e14, 5e14),
         "long_name": "Total ocean area excluding marine regions covered by grounded ice",
     },
     {
         "variable": "maf", "dim": "t", "units": "kg",
         "mandatory": True, "output_interval": "forcing",
+        "precision": np.float64,
         "standard_name": "land_ice_mass_not_displacing_sea_water", "bounds": (1e19, 1e20),
         "long_name": "Land ice mass above flotation that would contribute to global mean sea-level change if converted to water and added to the ocean",
     },
@@ -166,12 +201,14 @@ GIAMIP_VARIABLES = [
     {
         "variable": "delta_bed_east", "dim": "lat_lon_t", "units": "m",
         "mandatory": False, "output_interval": "forcing",
+        "precision": np.float32,
         "standard_name": None, "bounds": (-200.0, 200.0),
         "long_name": "Eastward horizontal solid Earth displacement relative to the initial simulation timestep",
     },
     {
         "variable": "delta_bed_north", "dim": "lat_lon_t", "units": "m",
         "mandatory": False, "output_interval": "forcing",
+        "precision": np.float32,
         "standard_name": None, "bounds": (-200.0, 200.0),
         "long_name": "Northward horizontal solid Earth displacement relative to the initial simulation timestep",
     },
@@ -179,12 +216,14 @@ GIAMIP_VARIABLES = [
     {
         "variable": "Clm", "dim": "degree_order", "units": "1",
         "mandatory": False, "output_interval": "once",
+        "precision": np.float64,
         "standard_name": None, "bounds": None,
         "long_name": "Cosine spherical harmonic coefficients (C_lm) of geoid height change (delta_g) between the first and final simulation timesteps",
     },
     {
         "variable": "Slm", "dim": "degree_order", "units": "1",
         "mandatory": False, "output_interval": "once",
+        "precision": np.float64,
         "standard_name": None, "bounds": None,
         "long_name": "Sine spherical harmonic coefficients (S_lm) of geoid height change (delta_g) between the first and final simulation timesteps",
     },
@@ -835,6 +874,32 @@ def _check_naming(
     return errors
 
 
+# Attributes that declare a missing/invalid value. The data request permits none
+# of them: "No invalid or missing values are permitted for this variable."
+_FILL_VALUE_ATTRS = ("_FillValue", "missing_value")
+
+
+def _check_no_fill_value(log_file, ds: xr.Dataset, var_name: str) -> int:
+    """Report any missing-value attribute declared on *var_name*.
+
+    xarray moves '_FillValue' from the file into '.encoding' when it decodes the
+    array, so both encoding and attrs are inspected.
+    """
+    errors = 0
+    declared = {**ds[var_name].encoding, **ds[var_name].attrs}
+    for attr in _FILL_VALUE_ATTRS:
+        value = declared.get(attr)
+        if value is not None:
+            log_file.write(
+                f" - ERROR: variable '{var_name}' declares '{attr}' = {value};"
+                f" the data request permits no fill value.\n"
+            )
+            errors += 1
+    if errors == 0:
+        log_file.write(" - No fill value declared: passed\n")
+    return errors
+
+
 def _check_numerical(
     log_file,
     ds: xr.Dataset,
@@ -854,6 +919,17 @@ def _check_numerical(
         errors += 1
     else:
         log_file.write(f" - No missing values: passed\n")
+
+    # No infinities (the data request permits no invalid values either).
+    if np.isinf(data).any():
+        log_file.write(f" - ERROR: variable '{var_name}' contains infinite values.\n")
+        errors += 1
+
+    # No fill value may be declared: the data request specifies _FillValue "none"
+    # for every variable. Values matching a declared _FillValue have already been
+    # decoded to NaN by xarray and are caught above; this catches the declaration
+    # itself, which signals that missing data is expected.
+    errors += _check_no_fill_value(log_file, ds, var_name)
 
     # Values must lie within the variable's plausible range (sanity bounds).
     bounds = GIAMIP_VAR_META.get(var_name, {}).get("bounds")
@@ -989,6 +1065,24 @@ def _check_grid_matches_forcing(log_file, name: str, vals, forcing_vals) -> int:
     return 1
 
 
+# Shown when the dimensions are in exactly the reverse of the expected order,
+# which is the signature of writing the file from a column-major language: the
+# netCDF Fortran and MATLAB interfaces reverse the dimension list relative to the
+# C/CDL view, so an order transcribed literally from the data request comes out
+# reversed in the file itself.
+_COLUMN_MAJOR_HINT = (
+    "   HINT: the dimensions are in exactly the reverse of the expected order.\n"
+    "   If you write NetCDF from a column-major language (Fortran, MATLAB), those\n"
+    "   interfaces reverse the dimension list relative to the C/Python view that the\n"
+    "   data request is written in, so declaring\n"
+    "       {expected}\n"
+    "   there produces\n"
+    "       {reversed}\n"
+    "   in the file itself. Declare them in the reverse order in Fortran/MATLAB, or\n"
+    "   transpose the array before writing. Either way, confirm with\n"
+    "   'ncdump -h <file>': it shows the order as this checker sees it.\n"
+)
+
 # Expected dimension ordering for each dim type. The time dimension may be named
 # "time" or "t" in the data; both are normalised to "time" before comparison.
 _EXPECTED_DIMS = {
@@ -1016,7 +1110,40 @@ def _check_dimensions(log_file, ds: xr.Dataset, var_name: str, dim_type: str) ->
             f" does not match expected {expected}.\n"
         )
         errors += 1
+        if actual == tuple(reversed(expected)):
+            log_file.write(_COLUMN_MAJOR_HINT.format(expected=expected,
+                                                     reversed=tuple(reversed(expected))))
     return errors
+
+
+def _check_year_matches_time(log_file, time_vals, var_years) -> int:
+    """Check that 'year' is the year of each 'time' step.
+
+    'time' is days since 2000-01-01 on a 365-day calendar, so the year of a step
+    is time/365 (0 -> 0, 365 -> 1, -365 -> -1). 'year' is an integer, so it is
+    accepted as the nearest year: half a year of slack. The usual failure this
+    catches is years written into 'time' itself.
+    """
+    if len(time_vals) != len(var_years):
+        log_file.write(
+            f" - ERROR: '{GIAMIP_YEAR_VAR}' has {len(var_years)} step(s),"
+            f" 'time' has {len(time_vals)} step(s).\n"
+        )
+        return 1
+
+    implied = time_vals / GIAMIP_DAYS_PER_YEAR
+    deviation = np.abs(implied - var_years)
+    worst = int(np.argmax(deviation))
+    if deviation[worst] > 0.5:
+        log_file.write(
+            f" - ERROR: '{GIAMIP_YEAR_VAR}' does not match 'time'/{GIAMIP_DAYS_PER_YEAR}"
+            f" (worst at index {worst}: time {time_vals[worst]} implies year"
+            f" {implied[worst]:.3f}, but {GIAMIP_YEAR_VAR} is {var_years[worst]}).\n"
+        )
+        return 1
+
+    log_file.write(f" - '{GIAMIP_YEAR_VAR}' matches the 'time' axis: passed\n")
+    return 0
 
 
 def _check_time(
@@ -1033,23 +1160,42 @@ def _check_time(
         log_file.write(" - ERROR: time dimension not found.\n")
         return errors + 1
 
-    # Time values are stored directly as calendar years (no calendar decoding).
+    time_vals = np.asarray(ds[time_coord].values, dtype=float)
+    if not _strictly_increasing(time_vals):
+        log_file.write(" - ERROR: time is not monotonically increasing.\n")
+        errors += 1
+    else:
+        log_file.write(" - Time is monotonically increasing: passed\n")
+
+    # The reference time vector is the 'year' variable, not the 'time' axis:
+    # 'time' is days since 2000-01-01 on a 365-day calendar, so year == time/365.
+    if GIAMIP_YEAR_VAR not in ds.variables:
+        log_file.write(
+            f" - ERROR: variable '{GIAMIP_YEAR_VAR}' not found; it is required"
+            f" alongside 'time' and carries the year of each output step.\n"
+        )
+        return errors + 1
+
     try:
-        var_years = np.asarray(ds[time_coord].values).astype(int)
+        var_years = np.asarray(ds[GIAMIP_YEAR_VAR].values).astype(int)
     except Exception as err:
-        log_file.write(f" - ERROR: time coordinate could not be read as years: {err}\n")
+        log_file.write(
+            f" - ERROR: '{GIAMIP_YEAR_VAR}' could not be read as years: {err}\n"
+        )
         return errors + 1
 
     if not _strictly_increasing(var_years):
-        log_file.write(" - ERROR: time is not monotonically increasing.\n")
+        log_file.write(f" - ERROR: '{GIAMIP_YEAR_VAR}' is not monotonically increasing.\n")
         return errors + 1
-    log_file.write(" - Time is monotonically increasing: passed\n")
+    log_file.write(f" - '{GIAMIP_YEAR_VAR}' is monotonically increasing: passed\n")
+
+    errors += _check_year_matches_time(log_file, time_vals, var_years)
 
     # Compare against the forcing 'year' variable, year-by-year.
     if output_interval == "forcing" and forcing_years is not None:
         if len(var_years) != len(forcing_years):
             log_file.write(
-                f" - ERROR: time has {len(var_years)} step(s),"
+                f" - ERROR: '{GIAMIP_YEAR_VAR}' has {len(var_years)} step(s),"
                 f" forcing has {len(forcing_years)} step(s).\n"
             )
             errors += 1
@@ -1068,6 +1214,101 @@ def _check_time(
     return errors
 
 
+# CF standard_name requested for each coordinate variable by the data request.
+GIAMIP_COORD_STANDARD_NAMES = {
+    "time": "time",
+    "lat": "latitude",
+    "lon": "longitude",
+}
+
+# long_name requested for each coordinate variable by the data request.
+GIAMIP_COORD_LONG_NAMES = {
+    "time": "Time",
+    "year": "Calendar year corresponding to each output time"
+            " (positive = CE, negative = BCE)",
+    "lat": "Latitude",
+    "lon": "Longitude",
+}
+
+# Data type requested for each coordinate variable by the data request.
+GIAMIP_COORD_DTYPES = {
+    "time": np.float64,
+    "year": np.int32,
+    "lat": np.float64,
+    "lon": np.float64,
+    "degree": np.float64,
+    "order": np.float64,
+}
+
+
+def _same_text(actual: str, expected: str) -> bool:
+    """Compare descriptive text ignoring case and runs of whitespace.
+
+    long_name values are free text: the data request itself carries trailing
+    spaces on several of them, so an exact string comparison would flag files
+    that are in fact conformant. Wording differences are still reported.
+    """
+    return " ".join(str(actual).split()).casefold() == " ".join(expected.split()).casefold()
+
+
+def _check_coord_dtype(log_file, ds: xr.Dataset, coord: str, kind: str) -> int:
+    """Check one coordinate variable against the requested data type."""
+    expected_dtype = GIAMIP_COORD_DTYPES.get(kind)
+    if expected_dtype is None or ds[coord].dtype == expected_dtype:
+        return 0
+
+    log_file.write(
+        f" - ERROR (coordinate): coordinate '{coord}' dtype is {ds[coord].dtype},"
+        f" expected {np.dtype(expected_dtype).name}.\n"
+    )
+    return 1
+
+
+def _check_coord_names(log_file, ds: xr.Dataset, coord: str, kind: str) -> int:
+    """Check 'long_name', 'standard_name' and dtype on one coordinate variable.
+
+    The data request asks for units and long_name on every coordinate variable,
+    plus standard_name wherever a CF one applies, and gives a data type for each.
+    *kind* selects the expected values from GIAMIP_COORD_LONG_NAMES /
+    GIAMIP_COORD_STANDARD_NAMES / GIAMIP_COORD_DTYPES ("time", "year", "lat",
+    "lon", ...), so a time axis named "t" is still checked against the values
+    requested for time.
+    """
+    errors = _check_coord_dtype(log_file, ds, coord, kind)
+
+    actual_ln = ds[coord].attrs.get("long_name")
+    expected_ln = GIAMIP_COORD_LONG_NAMES.get(kind)
+    if actual_ln is None:
+        log_file.write(
+            f" - ERROR (coordinate): coordinate '{coord}' missing 'long_name'.\n"
+        )
+        errors += 1
+    elif expected_ln is not None and not _same_text(actual_ln, expected_ln):
+        log_file.write(
+            f" - ERROR (coordinate): coordinate '{coord}' long_name '{actual_ln}',"
+            f" expected '{expected_ln}'.\n"
+        )
+        errors += 1
+
+    expected_sn = GIAMIP_COORD_STANDARD_NAMES.get(kind)
+    if expected_sn is not None:
+        actual_sn = ds[coord].attrs.get("standard_name")
+        if actual_sn is None:
+            log_file.write(
+                f" - ERROR (coordinate): coordinate '{coord}' missing 'standard_name'"
+                f" (expected '{expected_sn}').\n"
+            )
+            errors += 1
+        elif actual_sn != expected_sn:
+            log_file.write(
+                f" - ERROR (coordinate): coordinate '{coord}' standard_name"
+                f" '{actual_sn}', expected '{expected_sn}'.\n"
+            )
+            errors += 1
+
+    return errors
+
+
 def _check_attributes(
     log_file,
     ds: xr.Dataset,
@@ -1079,7 +1320,7 @@ def _check_attributes(
     """Check attributes, split into (metadata, coordinate, variable) error counts.
 
     Returns a 3-tuple of error counts:
-      - metadata:    global/file-level attributes (group, model, contacts, frame).
+      - metadata:    global/file-level attributes (group, model, contributors).
       - coordinate:  attributes on the lat/lon/time coordinate variables.
       - variable:    attributes on the main data variable (units, long_name,
                      standard_name) and its dtype.
@@ -1090,20 +1331,10 @@ def _check_attributes(
 
     # --- Metadata (global) attributes ---
     meta_errors = 0
-    for attr in ("group", "model", "contact_name", "contact_email"):
+    for attr in ("group", "model", "contributors_name", "contributors_email"):
         if attr not in ds.attrs:
             log_file.write(f" - ERROR (metadata): global attribute '{attr}' is missing.\n")
             meta_errors += 1
-
-    ref_frame = ds.attrs.get("reference_frame")
-    if ref_frame is None:
-        log_file.write(" - ERROR (metadata): global attribute 'reference_frame' is missing.\n")
-        meta_errors += 1
-    elif ref_frame.upper() != "CM":
-        log_file.write(
-            f" - ERROR (metadata): 'reference_frame' is '{ref_frame}', expected 'CM'.\n"
-        )
-        meta_errors += 1
 
     if meta_errors == 0:
         log_file.write(" - Metadata attributes: passed\n")
@@ -1116,6 +1347,8 @@ def _check_attributes(
             log_file.write(" - ERROR (coordinate): time coordinate not found.\n")
             coord_errors += 1
         else:
+            # units and calendar can sit in either attrs or encoding, depending on
+            # how the file was written (datasets are opened with decode_times=False).
             combined = {**ds[time_coord].encoding, **ds[time_coord].attrs}
             u = combined.get("units")
             if u is None:
@@ -1123,11 +1356,42 @@ def _check_attributes(
                     " - ERROR (coordinate): time coordinate missing 'units'.\n"
                 )
                 coord_errors += 1
-            elif u != "year":
+            elif not _TIME_UNITS_RE.match(str(u)):
                 log_file.write(
-                    f" - ERROR (coordinate): time units '{u}', expected 'year'.\n"
+                    f" - ERROR (coordinate): time units '{u}',"
+                    f" expected '{GIAMIP_TIME_UNITS}'.\n"
                 )
                 coord_errors += 1
+
+            cal = combined.get("calendar")
+            if cal is None:
+                log_file.write(
+                    " - ERROR (coordinate): time coordinate missing 'calendar'"
+                    f" (expected '{GIAMIP_TIME_CALENDAR}').\n"
+                )
+                coord_errors += 1
+            elif str(cal) != GIAMIP_TIME_CALENDAR:
+                log_file.write(
+                    f" - ERROR (coordinate): time calendar '{cal}',"
+                    f" expected '{GIAMIP_TIME_CALENDAR}'.\n"
+                )
+                coord_errors += 1
+
+            coord_errors += _check_coord_names(log_file, ds, time_coord, "time")
+
+        # The companion 'year' variable. Its absence is reported by the time
+        # checks, which need it; here we check it once it is there.
+        if GIAMIP_YEAR_VAR in ds.variables:
+            year_units = ds[GIAMIP_YEAR_VAR].attrs.get("units")
+            if year_units != "year":
+                log_file.write(
+                    f" - ERROR (coordinate): '{GIAMIP_YEAR_VAR}' units"
+                    f" '{year_units}', expected 'year'.\n"
+                )
+                coord_errors += 1
+            coord_errors += _check_coord_names(
+                log_file, ds, GIAMIP_YEAR_VAR, GIAMIP_YEAR_VAR
+            )
 
     if is_spatial:
         for coord in ("lat", "lon"):
@@ -1137,9 +1401,16 @@ def _check_attributes(
                         f" - ERROR (coordinate): coordinate '{coord}' missing 'units'.\n"
                     )
                     coord_errors += 1
+                coord_errors += _check_coord_names(log_file, ds, coord, coord)
             else:
                 log_file.write(f" - ERROR (coordinate): coordinate '{coord}' not found.\n")
                 coord_errors += 1
+
+    # degree/order carry a requested data type too; their presence and the rest of
+    # their attributes are not yet checked (see TODO.md).
+    for coord in ("degree", "order"):
+        if coord in ds.coords:
+            coord_errors += _check_coord_dtype(log_file, ds, coord, coord)
 
     if coord_errors == 0:
         log_file.write(" - Coordinate attributes: passed\n")
@@ -1165,10 +1436,18 @@ def _check_attributes(
             )
             var_errors += 1
 
-        # long_name
-        if "long_name" not in ds[var_name].attrs:
+        # long_name: must be present and match the wording of the data request.
+        actual_ln = ds[var_name].attrs.get("long_name")
+        expected_ln = var_meta.get("long_name")
+        if actual_ln is None:
             log_file.write(
                 f" - ERROR (variable): variable '{var_name}' missing 'long_name'.\n"
+            )
+            var_errors += 1
+        elif expected_ln is not None and not _same_text(actual_ln, expected_ln):
+            log_file.write(
+                f" - ERROR (variable): variable '{var_name}' long_name '{actual_ln}'"
+                f" does not match the data request '{expected_ln}'.\n"
             )
             var_errors += 1
 
@@ -1188,12 +1467,13 @@ def _check_attributes(
                 )
                 var_errors += 1
 
-        # dtype: all GIAMIP variables must be float32
-        if ds[var_name].dtype != np.float32:
+        # dtype: per-variable precision from the data request (float32 for the
+        # gridded fields, float64 for the scalar time series and Clm/Slm).
+        expected_dtype = var_meta.get("precision")
+        if expected_dtype is not None and ds[var_name].dtype != expected_dtype:
             log_file.write(
                 f" - ERROR (variable): variable '{var_name}' dtype is {ds[var_name].dtype},"
-                f" expected float32.\n"
-                f" This needs"
+                f" expected {np.dtype(expected_dtype).name}.\n"
             )
             var_errors += 1
 

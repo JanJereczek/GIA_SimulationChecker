@@ -88,6 +88,13 @@ def run_checker(case_dir: Path) -> dict:
     )
 
 
+# Encoding for the 'time'/'year' coordinate pair, as the data request asks for it.
+TIME_ENCODING = {
+    "time": {"dtype": "f8", "_FillValue": None},
+    checker.GIAMIP_YEAR_VAR: {"dtype": "i4", "_FillValue": None},
+}
+
+
 def first_file(case_dir: Path) -> Path:
     """Return the first .nc file in the case directory."""
     return sorted(case_dir.glob("*.nc"))[0]
@@ -135,9 +142,11 @@ def inject_nan(path: Path, var: str) -> None:
 
 
 def set_time_years(path: Path, years: list[int]) -> None:
-    """Replace the time axis with the given calendar years (stored directly)."""
+    """Replace the time axis with the given years, keeping 'time' and 'year' consistent."""
+    years = np.asarray(years, dtype=np.int32)
     with netCDF4.Dataset(path, "a") as nc:
-        nc.variables["time"][:] = np.array(years, dtype=np.float32)
+        nc.variables["time"][:] = years.astype(np.float64) * checker.GIAMIP_DAYS_PER_YEAR
+        nc.variables[checker.GIAMIP_YEAR_VAR][:] = years
 
 
 def write_forcing(path: Path, lat, lon, years) -> Path:
@@ -409,6 +418,47 @@ def test_wrong_dimension_order_detected(case_dir):
 
     assert summary["total_dim_errors"] >= 1
     assert "dimension ordering" in summary["log_text"].lower()
+    # (lat, lon, time) is not the reverse of (time, lat, lon), so no column-major hint
+    assert "HINT" not in summary["log_text"]
+
+
+def test_reversed_dimension_order_hints_at_column_major(case_dir):
+    """(lon, lat, time) is what Fortran/MATLAB produce from a literal transcription."""
+    import xarray as xr
+
+    path = file_for(case_dir, "delta_bed")
+    with xr.open_dataset(path, decode_times=False) as ds:
+        ds = ds.load()
+    ds["delta_bed"] = ds["delta_bed"].transpose("lon", "lat", "time")
+    path.unlink()
+    ds.to_netcdf(path)
+
+    summary = run_checker(case_dir)
+
+    assert summary["total_dim_errors"] >= 1
+    assert "HINT: the dimensions are in exactly the reverse" in summary["log_text"]
+    assert "ncdump -h" in summary["log_text"]
+
+
+def test_reversed_degree_order_hints_at_column_major(case_dir):
+    """Same trap for Clm/Slm, where both axes are 97 long so sizes give nothing away."""
+    import xarray as xr
+
+    generator.create_giamip_file(
+        output_dir=case_dir, variable_name="Clm", experiment_id=EXP_ID,
+        group=GROUP, model=MODEL,
+    )
+    path = file_for(case_dir, "Clm")
+    with xr.open_dataset(path, decode_times=False) as ds:
+        ds = ds.load()
+    ds["Clm"] = ds["Clm"].transpose("order", "degree")
+    path.unlink()
+    ds.to_netcdf(path)
+
+    summary = run_checker(case_dir)
+
+    assert summary["total_dim_errors"] >= 1
+    assert "HINT: the dimensions are in exactly the reverse" in summary["log_text"]
 
 
 # ---------------------------------------------------------------------------
@@ -421,15 +471,15 @@ def test_wrong_grid_size(case_dir, tmp_path):
     path.unlink()
 
     # Generate a small-grid replacement
-    small_lat = np.linspace(-81.0, 81.0, 10, dtype=np.float32)
-    small_lon = np.linspace(0.0, 360.0, 20, endpoint=False, dtype=np.float32)
-    time_years = np.array([START_YEAR, END_YEAR], dtype=np.float32)
+    small_lat = np.linspace(-81.0, 81.0, 10, dtype=np.float64)
+    small_lon = np.linspace(0.0, 360.0, 20, endpoint=False, dtype=np.float64)
+    time_years = np.array([START_YEAR, END_YEAR], dtype=np.int32)
     data = np.random.uniform(0.0, 100.0, (2, 10, 20)).astype(np.float32)
 
     ds = _make_spatial_dataset("delta_bed", data, time_years, small_lat, small_lon)
     ds.to_netcdf(path, unlimited_dims=("time",),
                  encoding={"delta_bed": {"dtype": "f4", "_FillValue": None},
-                            "time": {"dtype": "f4", "_FillValue": None}})
+                            **TIME_ENCODING})
 
     summary = run_checker(case_dir)
 
@@ -442,15 +492,15 @@ def test_wrong_lat_range(case_dir):
     path = file_for(case_dir, "delta_g")
     path.unlink()
 
-    bad_lat = np.linspace(0.0, 180.0, 257, dtype=np.float32)
-    lon = np.linspace(0.0, 360.0, 513, endpoint=False, dtype=np.float32)
-    time_years = np.array([START_YEAR, END_YEAR], dtype=np.float32)
+    bad_lat = np.linspace(0.0, 180.0, 257, dtype=np.float64)
+    lon = np.linspace(0.0, 360.0, 513, endpoint=False, dtype=np.float64)
+    time_years = np.array([START_YEAR, END_YEAR], dtype=np.int32)
     data = np.random.uniform(-10.0, 10.0, (2, 257, 513)).astype(np.float32)
 
     ds = _make_spatial_dataset("delta_g", data, time_years, bad_lat, lon)
     ds.to_netcdf(path, unlimited_dims=("time",),
                  encoding={"delta_g": {"dtype": "f4", "_FillValue": None},
-                            "time": {"dtype": "f4", "_FillValue": None}})
+                            **TIME_ENCODING})
 
     summary = run_checker(case_dir)
 
@@ -515,21 +565,76 @@ def test_non_monotonic_time(case_dir):
 # ---------------------------------------------------------------------------
 
 def test_missing_global_attribute(case_dir):
-    del_global_attr(first_file(case_dir), "contact_email")
+    del_global_attr(first_file(case_dir), "contributors_email")
 
     summary = run_checker(case_dir)
 
     assert summary["total_meta_attr_errors"] >= 1
-    assert "contact_email" in summary["log_text"]
+    assert "contributors_email" in summary["log_text"]
 
 
-def test_wrong_reference_frame(case_dir):
-    set_global_attr(first_file(case_dir), "reference_frame", "CE")
+def test_wrong_time_units(case_dir):
+    """The pre-v3 convention (calendar years in 'time') must be flagged."""
+    set_var_attr(first_file(case_dir), "time", "units", "year")
 
     summary = run_checker(case_dir)
 
-    assert summary["total_meta_attr_errors"] >= 1
-    assert "reference_frame" in summary["log_text"]
+    assert summary["total_coord_attr_errors"] >= 1
+    assert "expected 'days since 2000-01-01 00:00:00'" in summary["log_text"]
+
+
+def test_short_time_units_accepted(case_dir):
+    """CF treats 'days since 2000-01-01' as identical; it must not be flagged."""
+    for nc_file in case_dir.glob("*.nc"):
+        with netCDF4.Dataset(nc_file, "a") as nc:
+            if "time" in nc.variables:
+                nc.variables["time"].units = "days since 2000-01-01"
+
+    summary = run_checker(case_dir)
+
+    assert summary["total_errors"] == 0, summary["log_text"]
+
+
+def test_wrong_time_calendar(case_dir):
+    set_var_attr(first_file(case_dir), "time", "calendar", "standard")
+
+    summary = run_checker(case_dir)
+
+    assert summary["total_coord_attr_errors"] >= 1
+    assert "expected '365_day'" in summary["log_text"]
+
+
+def test_missing_year_variable(case_dir):
+    path = file_for(case_dir, "maf")
+    _drop_variable(path, checker.GIAMIP_YEAR_VAR)
+
+    summary = run_checker(case_dir)
+
+    assert summary["total_time_errors"] >= 1
+    assert "'year' not found" in summary["log_text"]
+
+
+def test_year_inconsistent_with_time(case_dir):
+    """Years written into 'time' as well as 'year' — the old convention."""
+    path = file_for(case_dir, "maf")
+    with netCDF4.Dataset(path, "a") as nc:
+        nc.variables["time"][:] = np.array([START_YEAR, END_YEAR], dtype=np.float64)
+
+    summary = run_checker(case_dir)
+
+    assert summary["total_time_errors"] >= 1
+    assert "does not match 'time'/365" in summary["log_text"]
+
+
+def test_wrong_coordinate_dtype(case_dir):
+    """lat is requested as float64."""
+    path = file_for(case_dir, "delta_bed")
+    _rewrite_delta_bed(path, lat_dtype="f4")
+
+    summary = run_checker(case_dir)
+
+    assert summary["total_coord_attr_errors"] >= 1
+    assert "'lat' dtype is float32, expected float64" in summary["log_text"]
 
 
 def test_missing_long_name(case_dir):
@@ -545,27 +650,175 @@ def test_missing_long_name(case_dir):
 def test_wrong_dtype(case_dir, tmp_path):
     """Replace the delta_bed file with one where the variable is float64."""
     path = file_for(case_dir, "delta_bed")
-    path.unlink()
-
-    lat = np.linspace(-90.0, 90.0, 257, dtype=np.float32)
-    lon = np.linspace(0.0, 360.0, 513, endpoint=False, dtype=np.float32)
-    time_years = np.array([START_YEAR, END_YEAR], dtype=np.float32)
-    data = np.random.uniform(-100.0, 100.0, (2, 257, 513)).astype(np.float64)
-
-    ds = _make_spatial_dataset("delta_bed", data, time_years, lat, lon)
-    ds.to_netcdf(path, unlimited_dims=("time",),
-                 encoding={"delta_bed": {"dtype": "f8", "_FillValue": None},
-                            "time": {"dtype": "f4", "_FillValue": None}})
+    _rewrite_delta_bed(path, dtype="f8")
 
     summary = run_checker(case_dir)
 
     assert summary["total_var_attr_errors"] >= 1
-    assert "float32" in summary["log_text"]
+    assert "expected float32" in summary["log_text"]
+
+
+def test_wrong_dtype_scalar(case_dir):
+    """Scalar time series are requested as float64; float32 must be flagged."""
+    path = file_for(case_dir, "maf")
+    _rewrite_scalar(path, "maf", dtype="f4")
+
+    summary = run_checker(case_dir)
+
+    assert summary["total_var_attr_errors"] >= 1
+    assert "expected float64" in summary["log_text"]
+
+
+def test_wrong_long_name(case_dir):
+    path = file_for(case_dir, "maf")
+    set_var_attr(path, "maf", "long_name", "Mass above flotation")
+
+    summary = run_checker(case_dir)
+
+    assert summary["total_var_attr_errors"] >= 1
+    assert "does not match the data request" in summary["log_text"]
+
+
+def test_long_name_whitespace_and_case_tolerated(case_dir):
+    """The data request itself carries stray spaces, so those must not fail."""
+    path = file_for(case_dir, "maf")
+    expected = checker.GIAMIP_VAR_META["maf"]["long_name"]
+    set_var_attr(path, "maf", "long_name", f"  {expected.upper()}  ")
+
+    summary = run_checker(case_dir)
+
+    assert summary["total_errors"] == 0, summary["log_text"]
+
+
+def test_wrong_coordinate_long_name(case_dir):
+    set_var_attr(file_for(case_dir, "delta_bed"), "lat", "long_name", "y")
+
+    summary = run_checker(case_dir)
+
+    assert summary["total_coord_attr_errors"] >= 1
+    assert "expected 'Latitude'" in summary["log_text"]
+
+
+def test_missing_coordinate_long_name(case_dir):
+    del_var_attr(file_for(case_dir, "delta_bed"), "lat", "long_name")
+
+    summary = run_checker(case_dir)
+
+    assert summary["total_coord_attr_errors"] >= 1
+    assert "'lat' missing 'long_name'" in summary["log_text"]
+
+
+def test_missing_coordinate_standard_name(case_dir):
+    del_var_attr(file_for(case_dir, "delta_bed"), "lon", "standard_name")
+
+    summary = run_checker(case_dir)
+
+    assert summary["total_coord_attr_errors"] >= 1
+    assert "'lon' missing 'standard_name'" in summary["log_text"]
+
+
+def test_wrong_coordinate_standard_name(case_dir):
+    set_var_attr(file_for(case_dir, "delta_bed"), "time", "standard_name", "t")
+
+    summary = run_checker(case_dir)
+
+    assert summary["total_coord_attr_errors"] >= 1
+    assert "expected 'time'" in summary["log_text"]
+
+
+# ---------------------------------------------------------------------------
+# Tests: declared fill values
+# ---------------------------------------------------------------------------
+
+def test_declared_fill_value(case_dir):
+    """_FillValue is declared in the file and lands in xarray's encoding."""
+    path = file_for(case_dir, "delta_bed")
+    _rewrite_delta_bed(path, fill_value=9.96921e36)
+
+    summary = run_checker(case_dir)
+
+    assert summary["total_num_errors"] >= 1
+    assert "_FillValue" in summary["log_text"]
+
+
+def test_declared_missing_value(case_dir):
+    set_var_attr(file_for(case_dir, "maf"), "maf", "missing_value", -9999.0)
+
+    summary = run_checker(case_dir)
+
+    assert summary["total_num_errors"] >= 1
+    assert "missing_value" in summary["log_text"]
 
 
 # ---------------------------------------------------------------------------
 # Utility
 # ---------------------------------------------------------------------------
+
+def _drop_variable(path: Path, name: str) -> None:
+    """Rewrite a file without *name* (netCDF4 cannot delete variables in place)."""
+    import xarray as xr
+
+    ds = xr.open_dataset(path, decode_times=False).load()
+    ds = ds.drop_vars(name)
+    encoding = {k: v for k, v in TIME_ENCODING.items() if k in ds.variables}
+    path.unlink()
+    ds.to_netcdf(path, unlimited_dims=("time",), encoding=encoding)
+
+
+def _rewrite_delta_bed(path: Path, dtype: str = "f4", fill_value=None,
+                       lat_dtype: str = "f8") -> None:
+    """Rewrite the delta_bed file with the given on-disk dtypes and _FillValue.
+
+    All three are encoding-level properties, so the file has to be recreated
+    rather than patched in place.
+    """
+    path.unlink()
+
+    lat = np.linspace(-90.0, 90.0, 257, dtype=np.float64)
+    lon = np.linspace(0.0, 360.0, 513, endpoint=False, dtype=np.float64)
+    time_years = np.array([START_YEAR, END_YEAR], dtype=np.int32)
+    data = np.random.uniform(-100.0, 100.0, (2, 257, 513)).astype(dtype)
+
+    ds = _make_spatial_dataset("delta_bed", data, time_years, lat, lon)
+    ds.to_netcdf(
+        path, unlimited_dims=("time",),
+        encoding={"delta_bed": {"dtype": dtype, "_FillValue": fill_value},
+                  "lat": {"dtype": lat_dtype, "_FillValue": None},
+                  **TIME_ENCODING},
+    )
+
+
+def _rewrite_scalar(path: Path, var_name: str, dtype: str) -> None:
+    """Rewrite a scalar (time,) variable file with the given on-disk dtype."""
+    import xarray as xr
+    from giamip_compliance_checker import GIAMIP_VAR_META
+
+    meta = GIAMIP_VAR_META[var_name]
+    lo, hi = meta["bounds"]
+    values = np.linspace(lo + 0.1 * (hi - lo), hi - 0.1 * (hi - lo), 2).astype(dtype)
+    time_years = np.array([START_YEAR, END_YEAR], dtype=np.int32)
+
+    attrs = {"long_name": meta["long_name"], "units": meta["units"]}
+    if meta.get("standard_name"):
+        attrs["standard_name"] = meta["standard_name"]
+
+    ds = xr.Dataset(
+        {var_name: (("time",), values, attrs)},
+        coords=dict(generator._time_coords(time_years)),
+    )
+    ds.attrs.update({
+        "group": GROUP, "model": MODEL,
+        "contributors_name": "Synthetic Test",
+        "contributors_email": "test@example.org",
+    })
+
+    path.unlink()
+    ds.to_netcdf(
+        path, unlimited_dims=("time",),
+        encoding={var_name: {"dtype": dtype, "_FillValue": None},
+                  **TIME_ENCODING},
+    )
+
 
 def _make_spatial_dataset(var_name, data, time_years, lat, lon):
     """Build a minimal xarray Dataset for a (time, lat, lon) variable."""
@@ -580,14 +833,14 @@ def _make_spatial_dataset(var_name, data, time_years, lat, lon):
     ds = xr.Dataset(
         {var_name: (("time", "lat", "lon"), data, attrs)},
         coords={
-            "time": ("time", time_years, {"units": generator.TIME_UNITS}),
-            "lat": ("lat", lat, {"units": "degrees_north"}),
-            "lon": ("lon", lon, {"units": "degrees_east"}),
+            **generator._time_coords(time_years),
+            "lat": ("lat", lat, generator.COORD_ATTRS["lat"]),
+            "lon": ("lon", lon, generator.COORD_ATTRS["lon"]),
         },
     )
     ds.attrs.update({
         "group": GROUP, "model": MODEL,
-        "contact_name": "Synthetic Test", "contact_email": "test@example.org",
-        "reference_frame": "CM",
+        "contributors_name": "Synthetic Test",
+        "contributors_email": "test@example.org",
     })
     return ds

@@ -3,11 +3,13 @@
 Checks GIAMIP NetCDF simulation datasets for compliance with the GIAMIP data request conventions. Each experiment is first checked for **missing mandatory variables**, then the following categories are validated for every file:
 
 1. **Naming** — variable name, experiment ID, group name, and model name follow the filename convention.
-2. **Numerical** — no NaN/missing values; all values lie within the variable's plausible range (`bounds` in the variable metadata).
+2. **Numerical** — no NaN/missing values, no infinities, no declared `_FillValue`/`missing_value` attribute; all values lie within the variable's plausible range (`bounds` in the variable metadata).
 3. **Spatial** *(lat/lon/time variables only)* — global Gaussian grid of 257 × 513 nodes; latitude spans [−90, 90]; longitude spans [0, 360); and the lat/lon grid matches the forcing grid (within a relative tolerance).
    - **Dimension ordering** — variable dimensions are in the expected order: `(time, lat, lon)` for fields, `(time,)` for scalars, `(degree, order)` for `Clm`/`Slm`.
-4. **Time** — time axis is monotonically increasing; time values are calendar years and are compared year-by-year against the forcing file's `year` variable.
-5. **Attributes** — reported in three buckets: **metadata** (global attributes `group`, `model`, `contact_name`, `contact_email`, `reference_frame`; `reference_frame` must be `CM`), **coordinate** (time units `year`; lat/lon units present), and **variable** (units match the data request, `long_name` present, `standard_name` matches when specified, data variable is float32).
+4. **Time** — `time` is monotonically increasing; the companion `year` variable is present, monotonic, and consistent with the time axis (`year == time/365`), and is compared step-by-step against the forcing file's own `year` variable.
+5. **Attributes** — reported in three buckets: **metadata** (global attributes `group`, `model`, `contributors_name`, `contributors_email`), **coordinate** (time units `days since 2000-01-01 00:00:00` and calendar `365_day`, `year` units `year`; lat/lon units present; coordinate `long_name`, `standard_name` and data type match the data request), and **variable** (units match the data request, `long_name` matches its wording, `standard_name` matches when specified, dtype matches the precision requested for that variable).
+
+`long_name` comparisons ignore case and runs of whitespace; every other attribute must match exactly.
 
 Compliance criteria are defined in `giamip_compliance_checker.py`: variable metadata in `GIAMIP_VARIABLES` and the valid experiments (`Exp01`–`Exp12`) in `GIAMIP_EXPERIMENTS`. The forcing file supplies the reference time axis and grid.
 
@@ -94,26 +96,42 @@ Valid experiment IDs (`Exp01`–`Exp12`) are defined by `GIAMIP_EXPERIMENTS` in 
 
 ---
 
+## Dimension order — read this if you write NetCDF from Fortran or MATLAB
+
+The required dimension order — `(time, lat, lon)` for fields, `(degree, order)` for `Clm`/`Slm` — is the order as seen by `ncdump`, C and Python, which is what the file actually stores.
+
+The netCDF **Fortran and MATLAB** interfaces present dimensions in the **reverse** of that order, because those languages are column-major. Transcribing the order above literally into `nf90_def_var` or `nccreate` therefore produces a file whose stored order is reversed — `(lon, lat, time)` — even though it looks correct from inside Fortran or MATLAB. From those languages, declare the dimensions in reverse:
+
+```matlab
+% MATLAB: reverse order, so the file stores (time, lat, lon)
+nccreate('delta_bed_Exp01_AWI_MyModel.nc', 'delta_bed', ...
+         'Dimensions', {'lon', 513, 'lat', 257, 'time', nt});
+```
+
+Whatever language you use, `ncdump -h <file>` is the ground truth — it prints the order the checker sees. The checker recognises the exactly-reversed case and says so in the log.
+
+---
+
 ## Variables
 
-Full variable metadata (long names, standard names, units, precision, reference surface) is in [variables.md](variables.md).
+Full variable metadata (long names, standard names, units, precision, reference surface), the coordinate variables and the required global attributes are in [variables.md](variables.md).
 
-| Variable | Dimensions | Mandatory | Output interval |
-|----------|-----------|-----------|-----------------|
-| `delta_bed` | lat, lon, time | yes | forcing |
-| `delta_g` | lat, lon, time | yes | forcing |
-| `ocean_area_fraction` | lat, lon, time | yes | forcing |
-| `land_ice_area_fraction` | lat, lon, time | yes | forcing |
-| `mean_delta_g` | time | yes | forcing |
-| `grd_ice_mass` | time | yes | forcing |
-| `total_ice_mass` | time | yes | forcing |
-| `ocean_area_grdice` | time | yes | forcing |
-| `ocean_area` | time | yes | forcing |
-| `maf` | time | yes | forcing |
-| `delta_bed_east` | lat, lon, time | no | forcing |
-| `delta_bed_north` | lat, lon, time | no | forcing |
-| `Clm` | degree, order | no | snapshot |
-| `Slm` | degree, order | no | snapshot |
+| Variable | Dimensions | Mandatory | Output interval | Precision |
+|----------|-----------|-----------|-----------------|-----------|
+| `delta_bed` | lat, lon, time | yes | forcing | float32 |
+| `delta_g` | lat, lon, time | yes | forcing | float32 |
+| `ocean_area_fraction` | lat, lon, time | yes | forcing | float32 |
+| `land_ice_area_fraction` | lat, lon, time | yes | forcing | float32 |
+| `mean_delta_g` | time | yes | forcing | float64 |
+| `grd_ice_mass` | time | yes | forcing | float64 |
+| `total_ice_mass` | time | yes | forcing | float64 |
+| `ocean_area_grdice` | time | yes | forcing | float64 |
+| `ocean_area` | time | yes | forcing | float64 |
+| `maf` | time | yes | forcing | float64 |
+| `delta_bed_east` | lat, lon, time | no | forcing | float32 |
+| `delta_bed_north` | lat, lon, time | no | forcing | float32 |
+| `Clm` | degree, order | no | snapshot | float64 |
+| `Slm` | degree, order | no | snapshot | float64 |
 
 ---
 

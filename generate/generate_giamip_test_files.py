@@ -8,8 +8,10 @@ following the naming convention:
 
     {variable_name}_{experiment_id}_{group_name}_{model_name}.nc
 
-Time encoding:  the time coordinate holds calendar years directly (units "year").
-All data variables use float32.
+Time encoding:  'time' holds days since 2000-01-01 on a 365-day calendar, and the
+companion 'year' variable holds the year of each step (time/365).
+Each data variable uses the precision requested by the data request (float32 for
+the gridded fields, float64 for the scalar time series and Clm/Slm).
 """
 
 import argparse
@@ -25,19 +27,50 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from giamip_compliance_checker import GIAMIP_VARIABLES, GIAMIP_VAR_META
+from giamip_compliance_checker import (
+    GIAMIP_COORD_LONG_NAMES,
+    GIAMIP_DAYS_PER_YEAR,
+    GIAMIP_TIME_CALENDAR,
+    GIAMIP_TIME_UNITS,
+    GIAMIP_VARIABLES,
+    GIAMIP_VAR_META,
+    GIAMIP_YEAR_VAR,
+)
 
 # Full GIAMIP output grid
 NLAT = 257
 NLON = 513
-TIME_UNITS = "year"
+TIME_UNITS = GIAMIP_TIME_UNITS
+
+# Coordinate attributes required by the data request.
+COORD_ATTRS = {
+    "time": {"units": TIME_UNITS, "calendar": GIAMIP_TIME_CALENDAR,
+             "long_name": GIAMIP_COORD_LONG_NAMES["time"], "standard_name": "time"},
+    "year": {"units": "year", "long_name": GIAMIP_COORD_LONG_NAMES["year"]},
+    "lat": {"units": "degrees_north", "long_name": "Latitude",
+            "standard_name": "latitude"},
+    "lon": {"units": "degrees_east", "long_name": "Longitude",
+            "standard_name": "longitude"},
+    "degree": {"units": "1", "long_name": "Spherical harmonic degree"},
+    "order": {"units": "1", "long_name": "Spherical harmonic order"},
+}
+
+
+def _time_coords(years: np.ndarray) -> dict:
+    """Build the 'time' (days since 2000-01-01) and 'year' coordinate pair."""
+    years = np.asarray(years, dtype=np.int32)
+    days = years.astype(np.float64) * GIAMIP_DAYS_PER_YEAR
+    return {
+        "time": ("time", days, COORD_ATTRS["time"]),
+        GIAMIP_YEAR_VAR: ("time", years, COORD_ATTRS["year"]),
+    }
 
 
 def _make_grid():
     # Gaussian grids never include the exact poles; shift by half a cell.
     step = 180.0 / NLAT
-    lat = np.linspace(-90.0 + step / 2, 90.0 - step / 2, NLAT, dtype=np.float32)
-    lon = np.linspace(0.0, 360.0, NLON, endpoint=False, dtype=np.float32)
+    lat = np.linspace(-90.0 + step / 2, 90.0 - step / 2, NLAT, dtype=np.float64)
+    lon = np.linspace(0.0, 360.0, NLON, endpoint=False, dtype=np.float64)
     return lat, lon
 
 
@@ -61,22 +94,23 @@ def create_giamip_file(
 
     var_meta = GIAMIP_VAR_META[variable_name]
     dim_type = var_meta["dim"]   # "lat_lon_t" | "t" | "degree_order"
+    precision = var_meta["precision"]   # np.float32 | np.float64
 
-    # --- Build time axis (calendar years stored directly) ---
-    time_years = np.linspace(start_year, end_year, n_steps, dtype=np.float32)
+    # --- Build time axis (days since 2000-01-01, plus the year of each step) ---
+    time_years = np.linspace(start_year, end_year, n_steps).round().astype(np.int32)
 
     # --- Build data ---
     if dim_type == "lat_lon_t":
         lat, lon = _make_grid()
-        data = np.random.uniform(0.1, 0.9, (n_steps, NLAT, NLON)).astype(np.float32)
+        data = np.random.uniform(0.1, 0.9, (n_steps, NLAT, NLON)).astype(precision)
         # For mask variables ensure [0, 1]
         if variable_name not in ("ocean_area_fraction", "land_ice_area_fraction"):
             data = data * 100.0  # give some spread for non-mask vars
 
         coords = {
-            "time": ("time", time_years, {"units": TIME_UNITS}),
-            "lat": ("lat", lat, {"units": "degrees_north", "long_name": "latitude"}),
-            "lon": ("lon", lon, {"units": "degrees_east", "long_name": "longitude"}),
+            **_time_coords(time_years),
+            "lat": ("lat", lat, COORD_ATTRS["lat"]),
+            "lon": ("lon", lon, COORD_ATTRS["lon"]),
         }
         data_vars = {
             variable_name: (
@@ -90,11 +124,9 @@ def create_giamip_file(
         # Draw values comfortably inside the variable's plausible bounds.
         lo, hi = var_meta.get("bounds", (0.0, 1.0))
         mid, half = 0.5 * (lo + hi), 0.2 * (hi - lo)
-        data = np.random.uniform(mid - half, mid + half, n_steps).astype(np.float32)
+        data = np.random.uniform(mid - half, mid + half, n_steps).astype(precision)
 
-        coords = {
-            "time": ("time", time_years, {"units": TIME_UNITS}),
-        }
+        coords = dict(_time_coords(time_years))
         data_vars = {
             variable_name: (
                 ("time",),
@@ -107,14 +139,14 @@ def create_giamip_file(
         # Stokes coefficients up to degree 96 stored as (97, 97) matrix
         max_degree = 96
         n = max_degree + 1
-        data = np.zeros((n, n), dtype=np.float32)
+        data = np.zeros((n, n), dtype=precision)
         # Fill upper-triangular entries (valid degree/order combinations)
         for d in range(n):
-            data[d, : d + 1] = np.random.uniform(-1e-6, 1e-6, d + 1).astype(np.float32)
+            data[d, : d + 1] = np.random.uniform(-1e-6, 1e-6, d + 1).astype(precision)
 
         coords = {
-            "degree": ("degree", np.arange(n, dtype=np.int32)),
-            "order": ("order", np.arange(n, dtype=np.int32)),
+            "degree": ("degree", np.arange(n, dtype=np.float64), COORD_ATTRS["degree"]),
+            "order": ("order", np.arange(n, dtype=np.float64), COORD_ATTRS["order"]),
         }
         data_vars = {
             variable_name: (
@@ -133,9 +165,8 @@ def create_giamip_file(
         "Conventions": "CF-1.7",
         "group": group,
         "model": model,
-        "contact_name": "Synthetic Test",
-        "contact_email": "test@example.org",
-        "reference_frame": "CM",
+        "contributors_name": "Synthetic Test",
+        "contributors_email": "test@example.org",
     })
 
     filename = f"{variable_name}_{experiment_id}_{group}_{model}.nc"
@@ -144,9 +175,12 @@ def create_giamip_file(
     unlimited = ("time",) if dim_type in ("lat_lon_t", "t") else ()
     encoding = {}
     if variable_name in ds.data_vars:
-        encoding[variable_name] = {"dtype": "f4", "_FillValue": None}
+        encoding[variable_name] = {"dtype": np.dtype(precision).str[1:],
+                                   "_FillValue": None}
     if "time" in ds.coords:
-        encoding["time"] = {"dtype": "f4", "_FillValue": None}
+        encoding["time"] = {"dtype": "f8", "_FillValue": None}
+    if GIAMIP_YEAR_VAR in ds.coords:
+        encoding[GIAMIP_YEAR_VAR] = {"dtype": "i4", "_FillValue": None}
 
     ds.to_netcdf(output_path, unlimited_dims=unlimited, encoding=encoding)
     return output_path
