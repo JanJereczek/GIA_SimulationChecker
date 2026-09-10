@@ -25,4 +25,6 @@ jobs:
 
       - name: Run test suite
         shell: micromamba-shell {0}
-        run: pytest -v tests/test_compliance_checker.py
+        # Collect the whole tests/ directory rather than naming a single file, so
+        # renaming or adding a test module cannot silently stop CI from running.
+        run: pytest -v tests/

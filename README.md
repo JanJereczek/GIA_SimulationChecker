@@ -2,14 +2,19 @@
 
 Checks GIAMIP NetCDF simulation datasets for compliance with the GIAMIP data request conventions. Each experiment is first checked for **missing mandatory variables**, then the following categories are validated for every file:
 
-1. **Naming** — variable name, experiment ID, group name, and model name follow the filename convention.
+1. **Naming** — the filename parses into the four fields of the convention, the variable name is a recognised GIAMIP variable, and the experiment ID is a recognised GIAMIP experiment. The group and model fields are only required to be present and free of underscores; the checker has no roster of participating groups to validate them against.
 2. **Numerical** — no NaN/missing values, no infinities, no declared `_FillValue`/`missing_value` attribute; all values lie within the variable's plausible range (`bounds` in the variable metadata).
-3. **Spatial** *(lat/lon/time variables only)* — global Gaussian grid of 257 × 513 nodes; latitude spans [−90, 90]; longitude spans [0, 360); and the lat/lon grid matches the forcing grid (within a relative tolerance).
+3. **Spatial** *(lat/lon/time variables only)* — global Gaussian grid of 257 × 513 nodes; latitude spans [−90, 90]; longitude spans [0, 360); the `lat`/`lon` **values** match the prescribed GIAMIP grid, which the checker regenerates analytically (Gauss-Legendre latitudes, equally spaced longitudes) so this holds with or without a forcing file; and, when a forcing file is given, the grid also matches that file's grid within a relative tolerance.
    - **Dimension ordering** — variable dimensions are in the expected order: `(time, lat, lon)` for fields, `(time,)` for scalars, `(degree, order)` for `Clm`/`Slm`.
-4. **Time** — `time` is monotonically increasing; the companion `year` variable is present, monotonic, and consistent with the time axis (`year == time/365`), and is compared step-by-step against the forcing file's own `year` variable.
+4. **Time** — the `time` coordinate **variable** is present (a bare `time` dimension is not enough) and monotonically increasing; the companion `year` variable is present, monotonic, and consistent with the time axis (`year == time/365`), and is compared step-by-step against the forcing file's own `year` variable.
 5. **Attributes** — reported in three buckets: **metadata** (global attributes `group`, `model`, `contributors_name`, `contributors_email`), **coordinate** (time units `days since 2000-01-01 00:00:00` and calendar `365_day`, `year` units `year`; lat/lon units present; coordinate `long_name`, `standard_name` and data type match the data request), and **variable** (units match the data request, `long_name` matches its wording, `standard_name` matches when specified, dtype matches the precision requested for that variable).
 
-`long_name` comparisons ignore case and runs of whitespace; every other attribute must match exactly.
+`long_name` comparisons ignore case and runs of whitespace; every other attribute must match exactly — in particular `units`, so write `m2`, not `m²`.
+
+Two reporting rules are worth knowing when reading a log:
+
+- A check that **could not run** reports `skipped` and says why. Only a check that ran and found nothing reports `passed`.
+- A directory that is **empty or missing** is reported as one in which every mandatory variable is missing, never as compliant. An experiment whose transfer failed cannot come back clean.
 
 Compliance criteria are defined in `giamip_compliance_checker.py`: variable metadata in `GIAMIP_VARIABLES` and the valid experiments (`Exp01`–`Exp12`) in `GIAMIP_EXPERIMENTS`. The forcing file supplies the reference time axis and grid.
 
@@ -26,6 +31,8 @@ Once the environment is created, you need to activate it (each time you use the 
 ```bash
 conda activate isschecker
 ```
+
+The checker runs in whichever interpreter you start it with — it does not switch environments for you. If the `isschecker` environment is not active it prints a warning; if the packages are missing entirely you will get an `ImportError`. Either way, the fix is `conda activate isschecker`.
 
 Dependencies: Python 3.14, `numpy` 2.4, `xarray` 2026.4, `netCDF4` 1.7, `tqdm` 4.67.
 
@@ -92,7 +99,28 @@ Each output file must be named:
 
 For example: `delta_bed_Exp01_AWI_MyModel.nc`
 
+Optional experiments may submit several ensemble members, with the member identifier following the experiment ID:
+
+```
+{variable_name}_{experiment_id}_{mYY}_{group}_{model}.nc
+```
+
+For example: `delta_bed_Exp10_m01_AWI_MyModel.nc` (`m01` = baseline). Each member is treated as a **separate experiment**, so each must carry the full set of mandatory variables.
+
 Valid experiment IDs (`Exp01`–`Exp12`) are defined by `GIAMIP_EXPERIMENTS` in `giamip_compliance_checker.py`.
+
+> **The group and model fields must not contain underscores.** The variable name may (`land_ice_area_fraction`, `delta_bed_east`), and the checker splits the filename by matching the known variable names as a prefix — so `delta_bed_Exp01_Uni_Bonn_MyModel.nc` cannot be parsed and is rejected. Use `UniBonn` or `Uni-Bonn`. Hyphens are fine everywhere.
+
+---
+
+## The grid — the right size is not the right grid
+
+Output must be on the prescribed global Gaussian grid, and the checker compares the `lat`/`lon` **values**, not just their length. It regenerates the grid analytically, so this applies to every experiment, including the ones whose forcing file has not been delivered yet.
+
+- **Latitude**: the 257 Gauss-Legendre nodes in sin(latitude), −89.4649° to +89.4649°. The spacing is **not uniform** — it runs from 0.6932° near the poles to 0.6990° near the equator, and Gaussian grids never include the poles themselves.
+- **Longitude**: 513 equally spaced nodes of 360/513 = 0.70175°, 0° to 359.2982°. 360° is not repeated as a second 0°.
+
+Building latitude with `linspace(-90, 90, 257)` gives an equally spaced axis of the right length, and it is **not** this grid — the checker rejects it and says so. The reliable approach is to copy the `lat`/`lon` axes straight out of the forcing file for your experiment. Regional subsets and half-cell-shifted axes are rejected the same way. See [variables.md](variables.md#grid-specification) for the exact definition.
 
 ---
 

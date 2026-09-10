@@ -35,6 +35,8 @@ from giamip_compliance_checker import (
     GIAMIP_VARIABLES,
     GIAMIP_VAR_META,
     GIAMIP_YEAR_VAR,
+    _canonical_lat,
+    _canonical_lon,
 )
 
 # Full GIAMIP output grid
@@ -67,11 +69,12 @@ def _time_coords(years: np.ndarray) -> dict:
 
 
 def _make_grid():
-    # Gaussian grids never include the exact poles; shift by half a cell.
-    step = 180.0 / NLAT
-    lat = np.linspace(-90.0 + step / 2, 90.0 - step / 2, NLAT, dtype=np.float64)
-    lon = np.linspace(0.0, 360.0, NLON, endpoint=False, dtype=np.float64)
-    return lat, lon
+    """Return the prescribed GIAMIP grid (Gauss-Legendre lat, equally spaced lon).
+
+    Taken from the checker so the synthetic files sit on the same grid the checker
+    enforces; an equally spaced latitude axis would (correctly) be rejected.
+    """
+    return _canonical_lat(), _canonical_lon()
 
 
 def create_giamip_file(

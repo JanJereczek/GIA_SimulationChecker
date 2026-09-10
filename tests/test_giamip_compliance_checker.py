@@ -61,7 +61,6 @@ def baseline_dir(tmp_path_factory):
     summary = checker.run_checker(
         source_path=str(root),
         forcing_path=None,
-        workdir=str(REPO_ROOT),
         commit_num="tests",
     )
     assert summary["total_errors"] == 0, (
@@ -83,7 +82,6 @@ def run_checker(case_dir: Path) -> dict:
     return checker.run_checker(
         source_path=str(case_dir),
         forcing_path=None,
-        workdir=str(REPO_ROOT),
         commit_num="tests",
     )
 
@@ -98,6 +96,19 @@ TIME_ENCODING = {
 def first_file(case_dir: Path) -> Path:
     """Return the first .nc file in the case directory."""
     return sorted(case_dir.glob("*.nc"))[0]
+
+
+def file_section(log_text: str, file_name: str) -> str:
+    """Return the part of the log covering a single file.
+
+    The log concatenates every file in the directory, so a bare `in log_text`
+    assertion can be satisfied by a different file's section. Each file's block
+    starts with its "Experiment: ... - File: <name>" banner.
+    """
+    marker = f"- File: {file_name}\n"
+    start = log_text.index(marker) + len(marker)
+    nxt = log_text.find("- File: ", start)
+    return log_text[start:] if nxt == -1 else log_text[start:nxt]
 
 
 def file_for(case_dir: Path, var_name: str) -> Path:
@@ -261,7 +272,7 @@ def test_ensemble_members_treated_as_separate_experiments(tmp_path):
 
     summary = checker.run_checker(
         source_path=str(root), forcing_path=None,
-        workdir=str(REPO_ROOT), commit_num="tests",
+        commit_num="tests",
     )
 
     # Only m02 should report a missing mandatory variable; m01 is complete.
@@ -304,7 +315,7 @@ def test_run_model_checker_loops_over_experiments(tmp_path):
 
     results = checker.run_model_checker(
         source_dir=str(model), forcing_dir=str(forcing_dir),
-        workdir=str(REPO_ROOT), commit_num="tests",
+        commit_num="tests",
     )
 
     assert set(results) == {"Exp01", "Exp05"}
@@ -322,7 +333,7 @@ def test_run_model_checker_skips_non_experiment_dirs(tmp_path):
 
     results = checker.run_model_checker(
         source_dir=str(model), forcing_dir=str(forcing_dir),
-        workdir=str(REPO_ROOT), commit_num="tests",
+        commit_num="tests",
     )
 
     assert set(results) == {"Exp05"}
@@ -337,7 +348,7 @@ def test_run_full_checker_loops_over_models(tmp_path):
 
     results = checker.run_full_checker(
         output_dir=str(out), forcing_dir=str(forcing_dir),
-        workdir=str(REPO_ROOT), commit_num="tests",
+        commit_num="tests",
     )
 
     assert set(results) == {"ModelA", "ModelB"}
@@ -518,7 +529,6 @@ def test_forcing_grid_match_passes(case_dir, tmp_path):
     summary = checker.run_checker(
         source_path=str(case_dir),
         forcing_path=str(forcing),
-        workdir=str(REPO_ROOT),
         commit_num="tests",
     )
 
@@ -537,7 +547,6 @@ def test_forcing_grid_mismatch_detected(case_dir, tmp_path):
     summary = checker.run_checker(
         source_path=str(case_dir),
         forcing_path=str(forcing),
-        workdir=str(REPO_ROOT),
         commit_num="tests",
     )
 
@@ -774,8 +783,7 @@ def _rewrite_delta_bed(path: Path, dtype: str = "f4", fill_value=None,
     """
     path.unlink()
 
-    lat = np.linspace(-90.0, 90.0, 257, dtype=np.float64)
-    lon = np.linspace(0.0, 360.0, 513, endpoint=False, dtype=np.float64)
+    lat, lon = generator._make_grid()
     time_years = np.array([START_YEAR, END_YEAR], dtype=np.int32)
     data = np.random.uniform(-100.0, 100.0, (2, 257, 513)).astype(dtype)
 
@@ -844,3 +852,165 @@ def _make_spatial_dataset(var_name, data, time_years, lat, lon):
         "contributors_email": "test@example.org",
     })
     return ds
+
+
+# ---------------------------------------------------------------------------
+# Tests: a directory that cannot be checked must never report zero errors
+# ---------------------------------------------------------------------------
+
+def test_empty_directory_is_not_compliant(tmp_path):
+    """An experiment that was never delivered must not pass."""
+    empty = tmp_path / "Exp01"
+    empty.mkdir()
+
+    summary = checker.run_checker(
+        source_path=str(empty), forcing_path=None,
+        commit_num="tests",
+    )
+
+    assert summary["total_errors"] == len(checker.GIAMIP_MANDATORY_VARS)
+    assert summary["total_file_errors"] == len(checker.GIAMIP_MANDATORY_VARS)
+    assert "No .nc files found" in summary["log_text"]
+    # The synthesis block is written for this case too.
+    assert "error(s) detected." in summary["log_text"]
+
+
+def test_missing_directory_is_not_compliant(tmp_path):
+    summary = checker.run_checker(
+        source_path=str(tmp_path / "does_not_exist"), forcing_path=None,
+        commit_num="tests",
+    )
+
+    assert summary["total_errors"] == len(checker.GIAMIP_MANDATORY_VARS)
+
+
+def test_model_rollup_flags_empty_experiment(tmp_path):
+    """The roll-up must not show '0 error(s)' for an experiment with no files."""
+    model = tmp_path / "SomeModel"
+    _make_experiment_dir(model, "Exp05")
+    (model / "Exp01").mkdir()  # delivered as an empty directory
+    forcing_dir = tmp_path / "input"
+    forcing_dir.mkdir()
+
+    results = checker.run_model_checker(
+        source_dir=str(model), forcing_dir=str(forcing_dir),
+        commit_num="tests",
+    )
+
+    assert results["Exp05"]["total_errors"] == 0
+    assert results["Exp01"]["total_errors"] > 0
+
+
+# ---------------------------------------------------------------------------
+# Tests: the prescribed grid is enforced without a forcing file
+# ---------------------------------------------------------------------------
+
+def test_canonical_grid_shape_and_extent():
+    lat = checker._canonical_lat()
+    lon = checker._canonical_lon()
+
+    assert lat.shape == (checker.GIAMIP_GRID_NLAT,)
+    assert lon.shape == (checker.GIAMIP_GRID_NLON,)
+    # Gaussian latitudes never reach the poles, and 360 is not repeated as 0.
+    assert -90.0 < lat[0] < -89.0
+    assert 89.0 < lat[-1] < 90.0
+    assert lon[0] == 0.0
+    assert 359.0 < lon[-1] < 360.0
+    # Latitude spacing varies (Gaussian); longitude spacing does not.
+    assert not np.allclose(np.diff(lat), np.diff(lat)[0], atol=1e-6)
+    assert np.allclose(np.diff(lon), np.diff(lon)[0])
+
+
+def _replace_grid(case_dir: Path, var_name: str, lat, lon) -> None:
+    """Rewrite *var_name* on the given lat/lon axes, leaving everything else alone."""
+    import xarray as xr
+
+    path = file_for(case_dir, var_name)
+    with xr.open_dataset(path, decode_times=False) as ds:
+        ds = ds.load()
+    ds = ds.assign_coords(
+        lat=("lat", np.asarray(lat, dtype=np.float64), ds["lat"].attrs),
+        lon=("lon", np.asarray(lon, dtype=np.float64), ds["lon"].attrs),
+    )
+    path.unlink()
+    ds.to_netcdf(
+        path, unlimited_dims=("time",),
+        encoding={var_name: {"dtype": "f4", "_FillValue": None}, **TIME_ENCODING},
+    )
+
+
+def test_regional_grid_detected_without_forcing(case_dir):
+    """A 257x513 grid covering only a region must not pass, forcing file or not."""
+    _replace_grid(
+        case_dir, "delta_bed",
+        lat=np.linspace(-30.0, 30.0, 257),
+        lon=np.linspace(0.0, 40.0, 513),
+    )
+
+    summary = run_checker(case_dir)
+
+    assert summary["total_spatial_errors"] >= 1
+    assert "does not match the prescribed GIAMIP grid" in summary["log_text"]
+    assert "looks like a regional grid" in summary["log_text"]
+
+
+def test_equally_spaced_latitude_detected_without_forcing(case_dir):
+    """A global but equally spaced latitude axis is not the Gaussian grid."""
+    _, lon = generator._make_grid()
+    _replace_grid(case_dir, "delta_bed", lat=np.linspace(-89.6, 89.6, 257), lon=lon)
+
+    summary = run_checker(case_dir)
+
+    assert summary["total_spatial_errors"] >= 1
+    assert "the latitude axis is equally spaced" in summary["log_text"]
+    # Longitude is untouched and must still pass.
+    assert "Longitude matches the GIAMIP grid: passed" in summary["log_text"]
+
+
+# ---------------------------------------------------------------------------
+# Tests: a check that could not run says "skipped", never "passed"
+# ---------------------------------------------------------------------------
+
+def test_absent_variable_does_not_report_attributes_passed(case_dir):
+    """A file whose data variable is missing must not claim its attributes passed."""
+    import xarray as xr
+
+    path = file_for(case_dir, "mean_delta_g")
+    with xr.open_dataset(path, decode_times=False) as ds:
+        ds = ds.load()
+    ds = ds.rename({"mean_delta_g": "mdg"})
+    path.unlink()
+    ds.to_netcdf(path, unlimited_dims=("time",), encoding=TIME_ENCODING)
+
+    summary = run_checker(case_dir)
+    section = file_section(summary["log_text"], path.name)
+
+    assert "variable 'mean_delta_g' not found in dataset" in section
+    assert "Variable attributes: skipped (variable 'mean_delta_g' is not in the file)" in section
+    assert "Dimension ordering: skipped (variable 'mean_delta_g' is not in the file)" in section
+    assert "Variable attributes: passed" not in section
+
+
+# ---------------------------------------------------------------------------
+# Tests: a missing time axis must not be validated against a fabricated one
+# ---------------------------------------------------------------------------
+
+def test_missing_time_coordinate_detected(case_dir):
+    """xarray invents an index for a bare dimension; the checker must not trust it."""
+    import xarray as xr
+
+    path = file_for(case_dir, "maf")
+    with xr.open_dataset(path, decode_times=False) as ds:
+        ds = ds.load()
+    # Drop the coordinate variables but keep the 'time' dimension on 'maf'.
+    ds = ds.drop_vars(["time", checker.GIAMIP_YEAR_VAR])
+    path.unlink()
+    ds.to_netcdf(path)
+
+    summary = run_checker(case_dir)
+    section = file_section(summary["log_text"], path.name)
+
+    assert summary["total_time_errors"] >= 1
+    assert "no 'time' coordinate variable" in section
+    # The fabricated 0, 1, 2, ... index must not be reported as a valid time axis.
+    assert "Time is monotonically increasing: passed" not in section

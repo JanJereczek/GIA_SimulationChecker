@@ -3,9 +3,13 @@
 # GIAMIP Compliance Checker — check summary
 #
 # 1. Naming (_check_naming)
-#    - Filename has exactly 4 underscore-separated fields: {var}_{exp_id}_{group}_{model}.nc
-#    - Variable name (field 0) is a recognised GIAMIP variable name.
-#    - Experiment id (field 1) is one of the recognised GIAMIP experiments (GIAMIP_EXPERIMENTS).
+#    - Filename parses as {var}_{exp_id}_{group}_{model}.nc, optionally carrying an
+#      ensemble member: {var}_{exp_id}_{mYY}_{group}_{model}.nc. The variable name
+#      may contain underscores; exp_id, member, group and model must not.
+#    - The variable name is a recognised GIAMIP variable name.
+#    - The experiment id is one of the recognised GIAMIP experiments
+#      (GIAMIP_EXPERIMENTS). The group and model fields are not validated beyond
+#      being present and underscore-free: the checker has no roster of groups.
 #
 # 2. Numerical (_check_numerical)
 #    - No NaN or missing values are present in the data array.
@@ -19,6 +23,10 @@
 #    - Grid has exactly 257 latitude × 513 longitude nodes.
 #    - Latitude spans [-90, 90] and increases south-to-north.
 #    - Longitude spans [0, 360) and increases west-to-east.
+#    - The lat/lon values match the canonical GIAMIP grid: Gauss-Legendre
+#      latitudes and equally spaced longitudes (see _canonical_lat/_canonical_lon).
+#      This needs no forcing file, so it also applies to the experiments whose
+#      forcing has not been delivered yet.
 #    - If a forcing file is provided, the lat/lon grid matches the forcing grid
 #      within a relative tolerance (GIAMIP_GRID_RELTOL).
 #
@@ -27,7 +35,7 @@
 #      (time,) for scalars, (degree, order) for Clm/Slm.
 #
 # 4. Time (_check_time)  [t and lat/lon/t variables only]
-#    - Time dimension is present and 'time' is monotonically increasing.
+#    - The 'time' coordinate variable is present and monotonically increasing.
 #    - The companion 'year' variable is present, monotonically increasing, and
 #      matches the time axis (year == time/365).
 #    - If a forcing file is provided, 'year' is compared step-by-step against the
@@ -51,22 +59,16 @@
 #       - standard_name matches the data request (only if one is specified).
 #       - dtype matches the precision requested for that variable: float32 for the
 #         gridded fields, float64 for the scalar time series and Clm/Slm.
+#
+# A check that could not be run reports "skipped" and says why; only a check that
+# actually ran and found nothing reports "passed".
 
-import sys
-import os
-
-if __name__ == "__main__":
-    # If the dedicated conda interpreter exists and we are not already running it,
-    # re-exec into it. Guarded by os.path.exists so the script still runs on machines
-    # with a different conda layout/env (relies on the user activating isschecker).
-    _CONDA_PYTHON = os.path.expanduser("~/.miniconda3/envs/isschecker/bin/python")
-    if os.path.exists(_CONDA_PYTHON) and os.path.realpath(sys.executable) != os.path.realpath(_CONDA_PYTHON):
-        os.execv(_CONDA_PYTHON, [_CONDA_PYTHON] + sys.argv)
-
+import argparse
 import datetime
+import os
 import re
 import subprocess
-import argparse
+import sys
 
 import numpy as np
 import xarray as xr
@@ -109,6 +111,35 @@ GIAMIP_LAT_EXTENT = (-90.0, 90.0)
 GIAMIP_LON_EXTENT = (0.0, 360.0)
 GIAMIP_COORD_TOL = 0.1  # degrees tolerance for grid extent checks
 GIAMIP_GRID_RELTOL = 1e-4  # relative tolerance for matching the forcing lat/lon grid
+# Absolute tolerance (degrees) for matching the canonical GIAMIP grid. Independent
+# implementations of Gauss-Legendre quadrature agree to ~1e-12 degrees, while any
+# grid that is not the prescribed one (equally spaced latitudes, a regional
+# subset, a shifted or half-cell-offset grid) is off by ~0.1 degrees or more, so
+# 1e-3 degrees (~100 m) separates the two cases with room to spare.
+GIAMIP_GRID_ABSTOL = 1e-3
+
+
+def _canonical_lat() -> np.ndarray:
+    """Latitudes of the prescribed GIAMIP grid, south to north.
+
+    The data request prescribes a global Gaussian grid, whose latitudes are the
+    Gauss-Legendre quadrature nodes in sin(latitude). The delivered forcing file
+    reproduces these to 1e-14 degrees, so they can be regenerated here rather than
+    read from a file — which is what lets the grid be validated for the
+    experiments whose forcing file has not been delivered yet.
+    """
+    nodes, _ = np.polynomial.legendre.leggauss(GIAMIP_GRID_NLAT)
+    return np.degrees(np.arcsin(nodes))
+
+
+def _canonical_lon() -> np.ndarray:
+    """Longitudes of the prescribed GIAMIP grid, west to east.
+
+    Equally spaced over [0, 360): 513 nodes of 360/513 degrees, so the last node
+    is 359.298... and 360 is *not* repeated as 0.
+    """
+    return np.arange(GIAMIP_GRID_NLON) * (360.0 / GIAMIP_GRID_NLON)
+
 
 # Time encoding. 'time' is days since 2000-01-01 on a 365-day calendar, and the
 # companion 'year' variable holds the year of each step, offset from 2000 CE:
@@ -231,6 +262,9 @@ GIAMIP_VARIABLES = [
 
 GIAMIP_VAR_NAMES = [v["variable"] for v in GIAMIP_VARIABLES]
 GIAMIP_MANDATORY_VARS = [v["variable"] for v in GIAMIP_VARIABLES if v["mandatory"]]
+# Error count charged to a directory that could not be checked at all (absent,
+# empty, or unprocessable): every mandatory variable is missing from it.
+_ALL_MANDATORY_MISSING = len(GIAMIP_MANDATORY_VARS)
 GIAMIP_VAR_META = {v["variable"]: v for v in GIAMIP_VARIABLES}
 
 # Sort by descending part-count so longer names are tried first (e.g.
@@ -293,7 +327,13 @@ def _parse_giamip_filename(file_name: str):
 EXPECTED_CONDA_ENV = "isschecker"
 
 
-def _check_environment() -> None:
+def warn_if_wrong_environment() -> None:
+    """Warn when the script is not running in the environment it was pinned for.
+
+    This is the only environment guard: the checker runs in whichever interpreter
+    it is invoked with. Every entry point calls this, so the warning is seen
+    however the checker is started.
+    """
     active = os.environ.get("CONDA_DEFAULT_ENV", "")
     # Also accept the case where the running interpreter already lives in the
     # expected env (e.g. invoked by absolute path), even if no env is "activated".
@@ -307,11 +347,10 @@ def _check_environment() -> None:
 
 
 def main() -> None:
-    _check_environment()
+    warn_if_wrong_environment()
     args = _parse_args()
     run_checker(
         source_path=args.source_dir,
-        workdir=os.getcwd(),
         forcing_path=args.forcing_filepath,
     )
 
@@ -319,10 +358,8 @@ def main() -> None:
 def run_checker(
     source_path: str,
     forcing_path: str | None,
-    workdir: str | None = None,
     commit_num: str | None = None,
 ) -> dict:
-    workdir = os.path.abspath(workdir or os.getcwd())
     commit_num = _get_commit_number() if commit_num is None else commit_num
     experiments = GIAMIP_EXPERIMENTS
     forcing = _load_forcing(forcing_path) if forcing_path else None
@@ -356,7 +393,6 @@ def _forcing_path_for_experiment(experiment_name: str, forcing_dir: str):
 def run_model_checker(
     source_dir: str,
     forcing_dir: str,
-    workdir: str | None = None,
     commit_num: str | None = None,
 ) -> dict:
     """Check every experiment subdirectory of a single model directory.
@@ -369,7 +405,6 @@ def run_model_checker(
 
     Returns a dict mapping experiment id -> summary.
     """
-    workdir = os.path.abspath(workdir or os.getcwd())
     commit_num = _get_commit_number() if commit_num is None else commit_num
 
     if not os.path.isdir(source_dir):
@@ -397,7 +432,7 @@ def run_model_checker(
 
         results[name] = run_checker(
             source_path=exp_dir, forcing_path=forcing_path,
-            workdir=workdir, commit_num=commit_num,
+            commit_num=commit_num,
         )
 
     _print_rollup(source_dir, results)
@@ -407,14 +442,12 @@ def run_model_checker(
 def run_full_checker(
     output_dir: str,
     forcing_dir: str,
-    workdir: str | None = None,
     commit_num: str | None = None,
 ) -> dict:
     """Check every model directory under output_dir, each looping over its
     experiments (see run_model_checker). Returns a dict mapping model name ->
     {experiment id: summary}.
     """
-    workdir = os.path.abspath(workdir or os.getcwd())
     commit_num = _get_commit_number() if commit_num is None else commit_num
 
     if not os.path.isdir(output_dir):
@@ -428,7 +461,7 @@ def run_full_checker(
             continue
         print(f"\n######## Model: {model} ########")
         results[model] = run_model_checker(
-            model_dir, forcing_dir, workdir=workdir, commit_num=commit_num,
+            model_dir, forcing_dir, commit_num=commit_num,
         )
     return results
 
@@ -519,7 +552,7 @@ def _run_compliance_checker(
 ) -> dict:
     if not os.path.isdir(source_path):
         print(f"ERROR: Directory not found: '{source_path}'.")
-        return _empty_summary()
+        return _empty_summary(_ALL_MANDATORY_MISSING)
 
     try:
         log_path = os.path.join(source_path, "compliance_checker_log.txt")
@@ -530,18 +563,27 @@ def _run_compliance_checker(
 
             experiment_groups = _group_files_by_experiment(source_path)
             if not experiment_groups:
-                msg = f"No .nc files found in directory '{source_path}'."
+                # An empty directory is not a compliant one. Report every mandatory
+                # variable as missing so that an experiment which was never
+                # delivered — or whose transfer silently failed — can never come
+                # back as "successfully verified with no errors".
+                msg = (
+                    f"No .nc files found in directory '{source_path}'."
+                    f" All {_ALL_MANDATORY_MISSING} mandatory variable(s) are"
+                    f" therefore missing: {GIAMIP_MANDATORY_VARS}"
+                )
                 print(f"ERROR: {msg}")
                 f.write(f"ERROR: {msg}\n")
-                return _empty_summary()
-
-            summary = _process_experiments(
-                log_file=f,
-                source_path=source_path,
-                experiment_groups=experiment_groups,
-                experiments=experiments,
-                forcing=forcing,
-            )
+                summary = _empty_summary(_ALL_MANDATORY_MISSING)
+                _print_total_summary(source_path, summary["total_errors"])
+            else:
+                summary = _process_experiments(
+                    log_file=f,
+                    source_path=source_path,
+                    experiment_groups=experiment_groups,
+                    experiments=experiments,
+                    forcing=forcing,
+                )
 
         _insert_synthesis(
             source_path=source_path,
@@ -563,14 +605,22 @@ def _run_compliance_checker(
 
     except TypeError as err:
         print("Something went wrong. Error:", err)
-        return _empty_summary()
+        return _empty_summary(_ALL_MANDATORY_MISSING)
 
 
-def _empty_summary() -> dict:
+def _empty_summary(file_errors: int = 0) -> dict:
+    """Summary for a directory that could not be checked file by file.
+
+    *file_errors* is attributed to the "missing mandatory variable" bucket: a
+    directory that is absent, empty, or that the checker could not process is
+    treated as one in which every mandatory variable is missing. Reporting zero
+    errors there would be a false pass — the worst failure mode for this tool —
+    so the count is never silently zero.
+    """
     return {
         "exp_counter": 0,
         "file_counter": 0,
-        "total_errors": 0,
+        "total_errors": file_errors,
         "total_naming_errors": 0,
         "total_num_errors": 0,
         "total_spatial_errors": 0,
@@ -579,7 +629,7 @@ def _empty_summary() -> dict:
         "total_meta_attr_errors": 0,
         "total_coord_attr_errors": 0,
         "total_var_attr_errors": 0,
-        "total_file_errors": 0,
+        "total_file_errors": file_errors,
         "report_naming_issues": [],
     }
 
@@ -1030,11 +1080,71 @@ def _check_spatial(log_file, ds: xr.Dataset, forcing_lat=None, forcing_lon=None)
         log_file.write(" - ERROR: longitude is not monotonically increasing (west-to-east).\n")
         errors += 1
 
+    # Grid values must be the prescribed GIAMIP grid. This is checked against the
+    # analytically regenerated grid, so it does not depend on a forcing file being
+    # available; the forcing comparison below is the same check against the file
+    # actually used to drive the experiment.
+    errors += _check_matches_canonical_grid(log_file, "latitude", lat_vals, _canonical_lat())
+    errors += _check_matches_canonical_grid(log_file, "longitude", lon_vals, _canonical_lon())
+
     # Grid must match the forcing/input grid (within a relative tolerance).
     errors += _check_grid_matches_forcing(log_file, "latitude", lat_vals, forcing_lat)
     errors += _check_grid_matches_forcing(log_file, "longitude", lon_vals, forcing_lon)
 
     return errors
+
+
+def _check_matches_canonical_grid(log_file, name: str, vals, canonical) -> int:
+    """Verify one coordinate axis against the prescribed GIAMIP grid.
+
+    The node-count and extent checks above pass for grids that are the right size
+    but the wrong grid — a regional subset, an equally spaced (non-Gaussian)
+    latitude axis, or a half-cell-shifted longitude axis all clear them. This
+    compares the values themselves. Returns 0 (skipped) if the axis has the wrong
+    number of nodes, since that is already reported.
+    """
+    vals = np.asarray(vals, dtype=float)
+    if vals.shape != canonical.shape:
+        log_file.write(
+            f" - {name.capitalize()} grid vs the GIAMIP grid: skipped"
+            f" (wrong number of nodes, reported above).\n"
+        )
+        return 0
+
+    max_diff = float(np.max(np.abs(vals - canonical)))
+    if max_diff <= GIAMIP_GRID_ABSTOL:
+        log_file.write(f" - {name.capitalize()} matches the GIAMIP grid: passed\n")
+        return 0
+
+    log_file.write(
+        f" - ERROR: {name} does not match the prescribed GIAMIP grid"
+        f" (max abs difference {max_diff:.6g}°, tolerance {GIAMIP_GRID_ABSTOL}°).\n"
+        f"   Expected {canonical[0]:.6f}° ... {canonical[-1]:.6f}°,"
+        f" found {vals[0]:.6f}° ... {vals[-1]:.6f}°.\n"
+    )
+    _write_grid_hint(log_file, name, vals, canonical)
+    return 1
+
+
+def _write_grid_hint(log_file, name: str, vals, canonical) -> None:
+    """Name the likely cause of a canonical-grid mismatch, when it is recognisable."""
+    spacing = np.diff(vals)
+    covered = float(vals[-1] - vals[0])
+    expected_cover = float(canonical[-1] - canonical[0])
+
+    if covered < 0.9 * expected_cover:
+        log_file.write(
+            f"   HINT: the {name} axis covers only {covered:.3f}° of the"
+            f" {expected_cover:.3f}° expected — this looks like a regional grid, or a\n"
+            "   global field that was cropped. GIAMIP output must be on the full global grid.\n"
+        )
+    elif name == "latitude" and np.allclose(spacing, spacing[0], atol=1e-6):
+        log_file.write(
+            "   HINT: the latitude axis is equally spaced. The GIAMIP grid is Gaussian:\n"
+            "   its spacing varies from 0.693° near the poles to 0.699° near the equator.\n"
+            "   Interpolate onto the forcing file's lat/lon axes rather than building an\n"
+            "   equally spaced axis with linspace/arange.\n"
+        )
 
 
 def _check_grid_matches_forcing(log_file, name: str, vals, forcing_vals) -> int:
@@ -1097,8 +1207,16 @@ def _check_dimensions(log_file, ds: xr.Dataset, var_name: str, dim_type: str) ->
     log_file.write("DIMENSION Tests \n")
 
     expected = _EXPECTED_DIMS.get(dim_type)
-    if var_name not in ds or expected is None:
-        log_file.write(" - Dimension ordering: skipped.\n")
+    if var_name not in ds:
+        log_file.write(
+            f" - Dimension ordering: skipped (variable '{var_name}' is not in the file).\n"
+        )
+        return errors
+    if expected is None:
+        log_file.write(
+            f" - Dimension ordering: skipped (no expected order defined for"
+            f" dimension type '{dim_type}').\n"
+        )
         return errors
 
     actual = tuple("time" if d == "t" else d for d in ds[var_name].dims)
@@ -1114,6 +1232,23 @@ def _check_dimensions(log_file, ds: xr.Dataset, var_name: str, dim_type: str) ->
             log_file.write(_COLUMN_MAJOR_HINT.format(expected=expected,
                                                      reversed=tuple(reversed(expected))))
     return errors
+
+
+# Accepted names for the time axis. "time" is what the data request asks for;
+# "t" is accepted so that a file using it is checked rather than skipped, and is
+# reported by the attribute checks.
+_TIME_COORD_NAMES = ("time", "t")
+
+
+def _find_time_coord(ds: xr.Dataset):
+    """Return the name of the time coordinate *variable*, or None.
+
+    Looked up in ds.variables rather than ds.dims on purpose: when a dimension has
+    no coordinate variable, xarray fabricates an index (0, 1, 2, ...) for it, so
+    ds["time"] would silently return a made-up axis and every time check would
+    "pass" on a file that carries no time axis at all.
+    """
+    return next((n for n in _TIME_COORD_NAMES if n in ds.variables), None)
 
 
 def _check_year_matches_time(log_file, time_vals, var_years) -> int:
@@ -1155,9 +1290,15 @@ def _check_time(
     errors = 0
     log_file.write("TIME Tests \n")
 
-    time_coord = next((d for d in ("time", "t") if d in ds.dims), None)
+    time_coord = _find_time_coord(ds)
     if time_coord is None:
-        log_file.write(" - ERROR: time dimension not found.\n")
+        if any(d in ds.dims for d in _TIME_COORD_NAMES):
+            log_file.write(
+                " - ERROR: the file has a time dimension but no 'time' coordinate"
+                " variable; the time axis itself is missing.\n"
+            )
+        else:
+            log_file.write(" - ERROR: no time dimension and no 'time' coordinate variable.\n")
         return errors + 1
 
     time_vals = np.asarray(ds[time_coord].values, dtype=float)
@@ -1342,9 +1483,11 @@ def _check_attributes(
     # --- Coordinate attributes ---
     coord_errors = 0
     if has_time:
-        time_coord = next((n for n in ("time", "t") if n in ds.coords), None)
+        time_coord = _find_time_coord(ds)
         if time_coord is None:
-            log_file.write(" - ERROR (coordinate): time coordinate not found.\n")
+            log_file.write(
+                " - ERROR (coordinate): time coordinate variable not found.\n"
+            )
             coord_errors += 1
         else:
             # units and calendar can sit in either attrs or encoding, depending on
@@ -1477,8 +1620,14 @@ def _check_attributes(
             )
             var_errors += 1
 
-    if var_errors == 0:
-        log_file.write(" - Variable attributes: passed\n")
+        if var_errors == 0:
+            log_file.write(" - Variable attributes: passed\n")
+    else:
+        # Reported as an error by _check_numerical; here the point is not to claim
+        # that attribute checks passed when there was nothing to check them on.
+        log_file.write(
+            f" - Variable attributes: skipped (variable '{var_name}' is not in the file).\n"
+        )
 
     return meta_errors, coord_errors, var_errors
 

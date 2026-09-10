@@ -5,14 +5,17 @@ dependencies:
   - python=3.14
   - pip=26.0.1
 
-# Core scientific python
+# Used directly by the checker
   - numpy=2.4.3
-  - pandas=3.0.2
-  - openpyxl=3.1.5
   - pytest=8.4.2
   - tqdm=4.67.3
 
 # Spatial packages
   - xarray=2026.4.0
-  - cftime=1.6.5
   - netcdf4=1.7.4
+
+# Transitive dependencies, pinned so the environment is reproducible:
+# xarray requires pandas, netCDF4 requires cftime. Neither is imported by this
+# repository directly.
+  - pandas=3.0.2
+  - cftime=1.6.5

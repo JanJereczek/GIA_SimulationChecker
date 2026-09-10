@@ -11,15 +11,8 @@ Example:
         --forcing-dir ./input
 """
 
-import sys
-import os
-
-if __name__ == "__main__":
-    _CONDA_PYTHON = os.path.expanduser("~/.miniconda3/envs/isschecker/bin/python")
-    if os.path.exists(_CONDA_PYTHON) and os.path.realpath(sys.executable) != os.path.realpath(_CONDA_PYTHON):
-        os.execv(_CONDA_PYTHON, [_CONDA_PYTHON] + sys.argv)
-
 import argparse
+import sys
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent
@@ -46,10 +39,10 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    checker.warn_if_wrong_environment()
     checker.run_full_checker(
         output_dir=args.source_dir,
         forcing_dir=args.forcing_dir,
-        workdir=os.getcwd(),
     )
 
 
